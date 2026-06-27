@@ -98,10 +98,10 @@ var bpm = 0;                  // smoothed tempo shown on screen
 var beatPeriod = 0;           // ms between beats
 var nextBeat = 0;             // scheduled time of the next beat
 var lastOnsetTime = 0;        // when the last kick landed
-var beadOffset = 0;           // scroll position of the bead train
 var markerFlash = 0;          // the read point flashes on each beat
 var bpmActive = false;        // false when the track is silent
-var tempoTraceIndex = -1;     // the circuit that carries the beat
+var tempoLevel = 0;           // eased 0..1 so the tempo circuits fade gently
+var tempoCircuits = [];       // several circuits that each carry the beat
 
 var seed = (Math.random() * 1e9) | 0;
 function rng() {
@@ -197,7 +197,8 @@ function updateEnergies() {
   for (var c = 0; c < chips.length; c++) if (chips[c].flash > 0.01) chips[c].flash *= 0.89;
 
   // tempo is live only while there is sound and recent kicks
-  bpmActive = (bpmRaw > 0) && (now - lastOnsetTime < 2000) && (overall > 0.05);
+  // tempo holds for a while after the last kick so breakdowns do not kill it
+  bpmActive = (bpmRaw > 0) && (now - lastOnsetTime < 6000) && (overall > 0.03);
   if (bpmActive) {
     bpm += (bpmRaw - bpm) * 0.1;
     if (beatPeriod > 0) {
@@ -206,8 +207,11 @@ function updateEnergies() {
     }
   } else {
     nextBeat = 0;
-    markerFlash *= 0.8;
+    markerFlash *= 0.85;
   }
+  // ease overall brightness so the circuits fade gently rather than blinking off
+  var wantLevel = bpmActive ? 1 : 0;
+  tempoLevel += (wantLevel - tempoLevel) * (wantLevel > tempoLevel ? 0.06 : 0.02);
 }
 
 function pushBeat(now, strength) {
@@ -236,10 +240,10 @@ function pushBeat(now, strength) {
 
 function onBeat() {
   markerFlash = 1;
-  // snap the bead train so a bead sits on the read point right now
-  if (tempoTraceIndex >= 0) {
-    var tr = traces[tempoTraceIndex];
-    beadOffset = tr.len * 0.5;   // read point is the middle of the trace
+  // snap each bead train so a bead sits on its read point right now
+  for (var i = 0; i < tempoCircuits.length; i++) {
+    var tr = traces[tempoCircuits[i].idx];
+    tempoCircuits[i].beadOffset = tr.len * 0.5;
   }
 }
 
@@ -357,11 +361,13 @@ function buildCircuit() {
     chips.push({ x:chx, y:chy, s:cell * (0.8 + rng() * 0.7), band:nearestBand(chx, chy), flash:0 });
   }
 
-  // the longest trace becomes the circuit that carries the beat
-  tempoTraceIndex = -1;
-  var bestLen = -1;
-  for (var ti2 = 0; ti2 < traces.length; ti2++) {
-    if (traces[ti2].len > bestLen) { bestLen = traces[ti2].len; tempoTraceIndex = ti2; }
+  // the longest few traces carry the beat; they cross-fade so the effect persists
+  var idxs = [];
+  for (var ti2 = 0; ti2 < traces.length; ti2++) idxs.push(ti2);
+  idxs.sort(function(a, b){ return traces[b].len - traces[a].len; });
+  tempoCircuits = [];
+  for (var tc = 0; tc < Math.min(5, idxs.length); tc++) {
+    tempoCircuits.push({ idx: idxs[tc], beadOffset: rng() * 500, phase: rng() * 6.283 });
   }
 
   buildComponents(cell);
@@ -676,37 +682,42 @@ function frame(t) {
 // the tempo circuit carries a train of beads that scrolls at the beat rate
 // and crosses a fixed read point on each beat, like a scope sweep
 function drawTempo(dt) {
-  if (!bpmActive || tempoTraceIndex < 0) { markerFlash *= 0.85; return; }
-  var tr = traces[tempoTraceIndex];
-  var spacing = gCell * 2.6;          // fewer beads, one per beat
-  var dMark = tr.len * 0.5;           // the point the beads pass
-
-  if (beatPeriod > 0) beadOffset += spacing * (dt / beatPeriod);
-  beadOffset = beadOffset % tr.len;
-
+  if (tempoLevel < 0.01 || !tempoCircuits.length) { markerFlash *= 0.9; return; }
+  var tnow = performance.now() / 1000;
   ctx.globalCompositeOperation = 'lighter';
 
-  var n = Math.ceil(tr.len / spacing) + 2;
-  for (var k = 0; k < n; k++) {
-    var d = (k * spacing + beadOffset) % tr.len;
-    if (d < 0) d += tr.len;
-    var pt = pointAt(tr, d);
-    var near = 1 - Math.min(1, Math.abs(d - dMark) / (spacing * 0.6));
-    var r = gCell * (0.06 + 0.08 * near);
-    ctx.fillStyle = '#bfeeff';
-    ctx.globalAlpha = 0.25 + 0.45 * near;
-    ctx.beginPath(); ctx.arc(pt.x, pt.y, r, 0, 7); ctx.fill();
+  for (var ci = 0; ci < tempoCircuits.length; ci++) {
+    var c = tempoCircuits[ci];
+    var tr = traces[c.idx];
+    var spacing = gCell * 2.6;
+    var dMark = tr.len * 0.5;
+
+    if (beatPeriod > 0) c.beadOffset += spacing * (dt / beatPeriod);
+    c.beadOffset = c.beadOffset % tr.len;
+
+    // each circuit breathes on its own phase, so they cross-fade
+    var breath = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(tnow * 0.85 + c.phase));
+    var lvl = tempoLevel * breath;
+
+    var n = Math.ceil(tr.len / spacing) + 2;
+    for (var k = 0; k < n; k++) {
+      var d = (k * spacing + c.beadOffset) % tr.len;
+      if (d < 0) d += tr.len;
+      var pt = pointAt(tr, d);
+      var near = 1 - Math.min(1, Math.abs(d - dMark) / (spacing * 0.6));
+      var r = gCell * (0.06 + 0.08 * near);
+      ctx.fillStyle = '#bfeeff';
+      ctx.globalAlpha = (0.22 + 0.4 * near) * lvl;
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, r, 0, 7); ctx.fill();
+    }
+
+    var mp = pointAt(tr, dMark);
+    ctx.fillStyle = '#dff6ff';
+    ctx.globalAlpha = (0.32 + markerFlash * 0.5) * lvl;
+    ctx.beginPath(); ctx.arc(mp.x, mp.y, gCell * (0.09 + markerFlash * 0.12), 0, 7); ctx.fill();
   }
 
-  // the read point, a small node that ticks on each beat
-  var mp = pointAt(tr, dMark);
-  ctx.fillStyle = '#dff6ff';
-  ctx.globalAlpha = 0.4 + markerFlash * 0.5;
-  ctx.beginPath(); ctx.arc(mp.x, mp.y, gCell * (0.09 + markerFlash * 0.12), 0, 7); ctx.fill();
-  ctx.globalAlpha = 0.12 + markerFlash * 0.25;
-  ctx.beginPath(); ctx.arc(mp.x, mp.y, gCell * (0.22 + markerFlash * 0.35), 0, 7); ctx.fill();
   markerFlash *= 0.85;
-
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
 }
