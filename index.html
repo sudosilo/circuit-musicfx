@@ -102,6 +102,17 @@ var bandFlash = [0,0,0,0,0];  // whole-circuit flash, spikes on a hit
 var nextHit  = [0,0,0,0,0];   // refractory clock so hits do not retrigger every frame
 var globalFlash = 0;          // brief board-wide lift on a strong bass hit
 
+// tempo tracking
+var bpmOnsets = [];           // timestamps of recent kicks
+var bpmRaw = 0;               // freshly computed tempo
+var bpm = 0;                  // smoothed tempo shown on screen
+var beatPeriod = 0;           // ms between beats
+var nextBeat = 0;             // scheduled time of the next beat
+var lastOnsetTime = 0;        // when the last kick landed
+var beatDot = 0;              // blink on each beat
+var bpmActive = false;        // false when the track is silent
+var tempoTraceIndex = -1;     // the circuit that carries the beat
+
 var seed = (Math.random() * 1e9) | 0;
 function rng() {
   seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
@@ -175,21 +186,70 @@ function updateEnergies() {
   }
 
   var now = performance.now();
+  var overall = 0;
   for (var k = 0; k < 5; k++) {
     var a = rawBand[k] > energies[k] ? 0.6 : 0.09;
     energies[k] += (rawBand[k] - energies[k]) * a;          // smoothed level for sustained flow
     bandAvg[k] += (rawBand[k] - bandAvg[k]) * 0.05;          // slow baseline to compare against
+    if (energies[k] > overall) overall = energies[k];
 
-    // a hit is a sharp jump above where the band normally sits
-    if (rawBand[k] > bandAvg[k] * 1.35 + 0.05 && rawBand[k] > 0.12 && now >= nextHit[k]) {
-      triggerHit(k, Math.min(1, (rawBand[k] - bandAvg[k]) / 0.5));
+    // a hit is a jump above where the band normally sits (more sensitive now)
+    if (rawBand[k] > bandAvg[k] * 1.22 + 0.03 && rawBand[k] > 0.07 && now >= nextHit[k]) {
+      var strength = Math.min(1, (rawBand[k] - bandAvg[k]) / 0.45);
+      triggerHit(k, strength);
       nextHit[k] = now + BANDS[k].gap;
+      if (k === 0) pushBeat(now, strength);             // kicks drive the tempo
     }
-    bandFlash[k] *= 0.86;
+    bandFlash[k] *= 0.90;                                // slower decay = flashier
   }
-  globalFlash *= 0.82;
-  for (var v = 0; v < vias.length; v++) if (vias[v].flash > 0.01) vias[v].flash *= 0.84;
-  for (var c = 0; c < chips.length; c++) if (chips[c].flash > 0.01) chips[c].flash *= 0.85;
+  globalFlash *= 0.84;
+  for (var v = 0; v < vias.length; v++) if (vias[v].flash > 0.01) vias[v].flash *= 0.88;
+  for (var c = 0; c < chips.length; c++) if (chips[c].flash > 0.01) chips[c].flash *= 0.89;
+
+  // tempo is live only while there is sound and recent kicks
+  bpmActive = (bpmRaw > 0) && (now - lastOnsetTime < 2000) && (overall > 0.05);
+  if (bpmActive) {
+    bpm += (bpmRaw - bpm) * 0.1;
+    if (beatPeriod > 0) {
+      if (now - nextBeat > beatPeriod * 4) nextBeat = now + beatPeriod;  // resync after a gap
+      while (now >= nextBeat) { onBeat(); nextBeat += beatPeriod; }
+    }
+  } else {
+    nextBeat = 0;
+    beatDot *= 0.8;
+  }
+}
+
+function pushBeat(now, strength) {
+  lastOnsetTime = now;
+  bpmOnsets.push(now);
+  if (bpmOnsets.length > 24) bpmOnsets.shift();
+  while (bpmOnsets.length && now - bpmOnsets[0] > 4000) bpmOnsets.shift();
+  if (bpmOnsets.length >= 4) {
+    var iv = [];
+    for (var i = 1; i < bpmOnsets.length; i++) {
+      var d = bpmOnsets[i] - bpmOnsets[i - 1];
+      if (d > 180 && d < 2000) iv.push(d);            // 30 to 333 bpm before folding
+    }
+    if (iv.length >= 3) {
+      iv.sort(function(p, q){ return p - q; });
+      var med = iv[(iv.length / 2) | 0];
+      var b = 60000 / med;
+      while (b < 70) b *= 2;                           // fold octaves into a musical range
+      while (b > 180) b /= 2;
+      bpmRaw = b;
+      beatPeriod = 60000 / bpmRaw;
+      if (nextBeat === 0) nextBeat = now + beatPeriod;
+    }
+  }
+}
+
+function onBeat() {
+  beatDot = 1;
+  if (tempoTraceIndex >= 0) {
+    var tr = traces[tempoTraceIndex];
+    pulses.push({ tr: tr, pos: 0, speed: tr.len / 0.5, band: tr.band, intensity: 1 });
+  }
 }
 
 function spawnOne(b, intensity) {
@@ -208,24 +268,23 @@ function spawnOne(b, intensity) {
 
 function triggerHit(b, strength) {
   var st = BANDS[b];
-  bandFlash[b] = Math.min(1.4, bandFlash[b] + 0.7 + strength * 0.5);
-  if (b === 0) globalFlash = Math.min(1, globalFlash + strength * 0.5);
+  bandFlash[b] = Math.min(1.8, bandFlash[b] + 0.95 + strength * 0.6);
+  if (b === 0) globalFlash = Math.min(1, globalFlash + strength * 0.6);
 
-  var n = Math.round(st.burst * (0.5 + strength));
+  var n = Math.round(st.burst * (0.6 + strength));
   for (var i = 0; i < n && pulses.length < 360; i++) spawnOne(b, 0.6 + strength * 0.4);
 
-  // flash a handful of this band's nodes
-  var want = 6 + ((strength * 8) | 0), flashed = 0, guard = 0;
+  // flash this band's nodes
+  var want = 8 + ((strength * 10) | 0), flashed = 0, guard = 0;
   while (flashed < want && guard < vias.length * 2) {
     guard++;
     var vi = (rng() * vias.length) | 0;
     if (vias[vi].band === b) { vias[vi].flash = 1; flashed++; }
   }
-  // bass lights its chip pads
-  if (st.chipFlash) {
-    for (var c = 0; c < chips.length; c++) {
-      if (chips[c].band === b) chips[c].flash = Math.min(1, 0.7 + strength * 0.5);
-    }
+  // every band lights its chip pads, bass hardest
+  var chipBase = st.chipFlash ? 0.85 : 0.5;
+  for (var c = 0; c < chips.length; c++) {
+    if (chips[c].band === b) chips[c].flash = Math.min(1, chipBase + strength * 0.4);
   }
 }
 
@@ -305,6 +364,13 @@ function buildCircuit() {
     var chx = (1 + rng() * (cols - 2)) * cell;
     var chy = (1 + rng() * (rows - 2)) * cell;
     chips.push({ x:chx, y:chy, s:cell * (0.8 + rng() * 0.7), band:nearestBand(chx, chy), flash:0 });
+  }
+
+  // the longest trace becomes the circuit that carries the beat
+  tempoTraceIndex = -1;
+  var bestLen = -1;
+  for (var ti2 = 0; ti2 < traces.length; ti2++) {
+    if (traces[ti2].len > bestLen) { bestLen = traces[ti2].len; tempoTraceIndex = ti2; }
   }
 
   renderStaticBoard(cell);
@@ -464,8 +530,8 @@ function frame(t) {
     var bf = bandFlash[ftr.band];
     if (bf < 0.03) continue;
     ctx.strokeStyle = BANDS[ftr.band].color;
-    ctx.globalAlpha = Math.min(0.5, bf * 0.5);
-    ctx.lineWidth = gCell * 0.10;
+    ctx.globalAlpha = Math.min(0.7, bf * 0.62);
+    ctx.lineWidth = gCell * 0.12;
     strokePts(ftr.px);
   }
 
@@ -474,10 +540,10 @@ function frame(t) {
     var o = vias[vi];
     if (o.flash < 0.03) continue;
     ctx.fillStyle = BANDS[o.band].color;
-    ctx.globalAlpha = o.flash * 0.9;
-    ctx.beginPath(); ctx.arc(o.x, o.y, o.r * (1.2 + o.flash), 0, 7); ctx.fill();
-    ctx.globalAlpha = o.flash * 0.35;
-    ctx.beginPath(); ctx.arc(o.x, o.y, o.r * (2.6 + o.flash * 2), 0, 7); ctx.fill();
+    ctx.globalAlpha = Math.min(1, o.flash);
+    ctx.beginPath(); ctx.arc(o.x, o.y, o.r * (1.4 + o.flash), 0, 7); ctx.fill();
+    ctx.globalAlpha = o.flash * 0.5;
+    ctx.beginPath(); ctx.arc(o.x, o.y, o.r * (3.0 + o.flash * 2.5), 0, 7); ctx.fill();
   }
 
   // chip flashes
@@ -504,7 +570,40 @@ function frame(t) {
     ctx.globalCompositeOperation = 'source-over';
   }
 
+  drawBpm();
   updateLegend();
+}
+
+function drawBpm() {
+  if (!bpmActive || tempoTraceIndex < 0) return;
+  var tr = traces[tempoTraceIndex];
+  var px = tr.px[0];
+  var pad = gCell * 0.5;
+  var fontPx = Math.max(13, Math.round(gCell * 0.85));
+  var label = Math.round(bpm) + ' BPM';
+  ctx.font = 'bold ' + fontPx + 'px system-ui, sans-serif';
+  var tw = ctx.measureText(label).width;
+  var dotR = fontPx * 0.32;
+  var boxW = tw + dotR * 3 + pad * 2;
+  var boxH = fontPx + pad;
+  var x = Math.min(Math.max(px.x, 6), W - boxW - 6);
+  var y = Math.min(Math.max(px.y - boxH - gCell * 0.4, 6), H - boxH - 6);
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  roundRect(ctx, x, y, boxW, boxH, 6);
+  ctx.fillStyle = 'rgba(4,12,18,0.82)'; ctx.fill();
+  ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(90,180,220,0.6)'; ctx.stroke();
+
+  // beat dot blinks on each beat
+  var cx = x + pad + dotR, cy = y + boxH / 2;
+  ctx.beginPath(); ctx.arc(cx, cy, dotR, 0, 7);
+  ctx.fillStyle = 'rgba(255,255,255,' + (0.25 + beatDot * 0.75).toFixed(3) + ')'; ctx.fill();
+  beatDot *= 0.85;
+
+  ctx.fillStyle = '#9fe8ff';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, cx + dotR * 1.6, cy + 1);
 }
 
 // ---------- legend ----------
