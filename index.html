@@ -78,6 +78,7 @@ var BANDS = [
 var traces = [];      // each: { px:[{x,y}], band, len, cum:[] }
 var vias = [];        // { x, y, r }
 var chips = [];       // { x, y, s }
+var components = [];  // PCB symbols: resistors, caps, diodes, inductors, grounds
 var bandTraces = [];  // arrays of trace indices per band
 var pulses = [];
 var gCell = 20;       // current grid cell size, set in buildCircuit
@@ -363,7 +364,43 @@ function buildCircuit() {
     if (traces[ti2].len > bestLen) { bestLen = traces[ti2].len; tempoTraceIndex = ti2; }
   }
 
+  buildComponents(cell);
   renderStaticBoard(cell);
+}
+
+function buildComponents(cell) {
+  components = [];
+  var types = ['res', 'cap', 'diode', 'ind'];
+  var counts = { res:0, cap:0, diode:0, ind:0 };
+  var prefix = { res:'R', cap:'C', diode:'D', ind:'L' };
+
+  // two-terminal parts sit inline on a straight stretch of a trace
+  var want = Math.min(60, Math.floor(traces.length * 0.28));
+  var tries = 0;
+  while (components.length < want && tries < want * 6) {
+    tries++;
+    var tr = traces[(rng() * traces.length) | 0];
+    if (tr.px.length < 3) continue;
+    var i = 1 + ((rng() * (tr.px.length - 1)) | 0);
+    var a = tr.px[i - 1], b = tr.px[i];
+    var dx = b.x - a.x, dy = b.y - a.y;
+    if (Math.hypot(dx, dy) < cell * 2.2) continue;
+    var type = types[(rng() * types.length) | 0];
+    counts[type]++;
+    components.push({
+      type: type,
+      x: (a.x + b.x) / 2, y: (a.y + b.y) / 2,
+      ang: Math.atan2(dy, dx), s: cell,
+      label: prefix[type] + counts[type]
+    });
+  }
+  // ground symbols at some trace ends
+  var gnd = 5 + ((rng() * 6) | 0);
+  for (var g = 0; g < gnd; g++) {
+    var t2 = traces[(rng() * traces.length) | 0];
+    var ep = t2.px[t2.px.length - 1];
+    components.push({ type:'gnd', x:ep.x, y:ep.y, ang:0, s:cell, label:'' });
+  }
 }
 
 function drawPolyline(c, px, width, style) {
@@ -381,6 +418,70 @@ function roundRect(c, x, y, w, h, r) {
   c.arcTo(x, y + h, x, y, r);
   c.arcTo(x, y, x + w, y, r);
   c.closePath();
+}
+
+function ln(c, x1, y1, x2, y2) {
+  c.beginPath(); c.moveTo(x1, y1); c.lineTo(x2, y2); c.stroke();
+}
+
+// draw one PCB component symbol into the static board, dim like the silkscreen
+function drawComponent(c, comp) {
+  var s = comp.s;
+  c.save();
+  c.translate(comp.x, comp.y);
+  c.rotate(comp.ang);
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  c.lineWidth = Math.max(1, s * 0.06);
+  c.strokeStyle = 'rgba(95,175,215,0.6)';
+  c.fillStyle = 'rgba(6,18,28,1)';
+
+  if (comp.type === 'res') {
+    var bl = s * 1.4, bh = s * 0.46;
+    ln(c, -s * 1.0, 0, -bl / 2, 0);
+    ln(c, bl / 2, 0, s * 1.0, 0);
+    roundRect(c, -bl / 2, -bh / 2, bl, bh, s * 0.08);
+    c.fill(); c.stroke();
+  } else if (comp.type === 'cap') {
+    var g = s * 0.26, ph = s * 0.7;
+    ln(c, -s * 0.9, 0, -g, 0);
+    ln(c, g, 0, s * 0.9, 0);
+    ln(c, -g, -ph / 2, -g, ph / 2);
+    ln(c, g, -ph / 2, g, ph / 2);
+  } else if (comp.type === 'diode') {
+    var t = s * 0.66;
+    ln(c, -s * 0.9, 0, -t / 2, 0);
+    ln(c, t / 2, 0, s * 0.9, 0);
+    c.beginPath();
+    c.moveTo(-t / 2, -t * 0.55); c.lineTo(t / 2, 0); c.lineTo(-t / 2, t * 0.55); c.closePath();
+    c.fill(); c.stroke();
+    ln(c, t / 2, -t * 0.55, t / 2, t * 0.55);   // cathode bar
+  } else if (comp.type === 'ind') {
+    ln(c, -s * 0.9, 0, -s * 0.6, 0);
+    ln(c, s * 0.6, 0, s * 0.9, 0);
+    var bumps = 4, bw = (s * 1.2) / bumps, x0 = -s * 0.6;
+    c.beginPath();
+    for (var k = 0; k < bumps; k++) {
+      var cx = x0 + bw * (k + 0.5);
+      c.moveTo(cx + bw / 2, 0);
+      c.arc(cx, 0, bw / 2, 0, Math.PI, true);
+    }
+    c.stroke();
+  } else if (comp.type === 'gnd') {
+    ln(c, 0, -s * 0.25, 0, s * 0.35);
+    var y = s * 0.35;
+    ln(c, -s * 0.5, y, s * 0.5, y);
+    ln(c, -s * 0.32, y + s * 0.22, s * 0.32, y + s * 0.22);
+    ln(c, -s * 0.16, y + s * 0.44, s * 0.16, y + s * 0.44);
+  }
+  c.restore();
+
+  // tiny silkscreen designator
+  if (comp.label) {
+    c.fillStyle = 'rgba(110,175,210,0.42)';
+    c.font = 'bold ' + Math.round(s * 0.5) + 'px system-ui, sans-serif';
+    c.textBaseline = 'alphabetic';
+    c.fillText(comp.label, comp.x + s * 0.55, comp.y - s * 0.5);
+  }
 }
 
 function renderStaticBoard(cell) {
@@ -409,7 +510,16 @@ function renderStaticBoard(cell) {
     offctx.fillStyle = 'rgba(9,24,36,0.95)'; offctx.fill();
     offctx.lineWidth = Math.max(1, cell * 0.05);
     offctx.strokeStyle = 'rgba(80,170,210,0.55)'; offctx.stroke();
+    // pin ticks down the left and right edges, like an IC footprint
+    var pins = 3, pl = cell * 0.22;
+    offctx.lineWidth = Math.max(1, cell * 0.04);
+    for (var pn = 0; pn < pins; pn++) {
+      var py = ch.y - ch.s / 2 + ch.s * (pn + 1) / (pins + 1);
+      ln(offctx, ch.x - ch.s / 2, py, ch.x - ch.s / 2 - pl, py);
+      ln(offctx, ch.x + ch.s / 2, py, ch.x + ch.s / 2 + pl, py);
+    }
   }
+  for (var cp = 0; cp < components.length; cp++) drawComponent(offctx, components[cp]);
 }
 
 // ---------- path helpers ----------
@@ -568,7 +678,7 @@ function frame(t) {
 function drawTempo(dt) {
   if (!bpmActive || tempoTraceIndex < 0) { markerFlash *= 0.85; return; }
   var tr = traces[tempoTraceIndex];
-  var spacing = gCell * 1.7;          // one bead per beat
+  var spacing = gCell * 2.6;          // fewer beads, one per beat
   var dMark = tr.len * 0.5;           // the point the beads pass
 
   if (beatPeriod > 0) beadOffset += spacing * (dt / beatPeriod);
@@ -581,22 +691,20 @@ function drawTempo(dt) {
     var d = (k * spacing + beadOffset) % tr.len;
     if (d < 0) d += tr.len;
     var pt = pointAt(tr, d);
-    var near = 1 - Math.min(1, Math.abs(d - dMark) / (spacing * 0.7));
-    var r = gCell * (0.14 + 0.14 * near);
-    ctx.fillStyle = '#cdf3ff';
-    ctx.globalAlpha = 0.45 + 0.55 * near;
+    var near = 1 - Math.min(1, Math.abs(d - dMark) / (spacing * 0.6));
+    var r = gCell * (0.06 + 0.08 * near);
+    ctx.fillStyle = '#bfeeff';
+    ctx.globalAlpha = 0.25 + 0.45 * near;
     ctx.beginPath(); ctx.arc(pt.x, pt.y, r, 0, 7); ctx.fill();
-    ctx.globalAlpha = (0.18 + 0.32 * near);
-    ctx.beginPath(); ctx.arc(pt.x, pt.y, r * 2.3, 0, 7); ctx.fill();
   }
 
-  // the read point itself, flashing on each beat
+  // the read point, a small node that ticks on each beat
   var mp = pointAt(tr, dMark);
-  ctx.fillStyle = '#ffffff';
-  ctx.globalAlpha = 0.55 + markerFlash * 0.45;
-  ctx.beginPath(); ctx.arc(mp.x, mp.y, gCell * (0.2 + markerFlash * 0.18), 0, 7); ctx.fill();
-  ctx.globalAlpha = 0.25 + markerFlash * 0.45;
-  ctx.beginPath(); ctx.arc(mp.x, mp.y, gCell * (0.55 + markerFlash * 0.7), 0, 7); ctx.fill();
+  ctx.fillStyle = '#dff6ff';
+  ctx.globalAlpha = 0.4 + markerFlash * 0.5;
+  ctx.beginPath(); ctx.arc(mp.x, mp.y, gCell * (0.09 + markerFlash * 0.12), 0, 7); ctx.fill();
+  ctx.globalAlpha = 0.12 + markerFlash * 0.25;
+  ctx.beginPath(); ctx.arc(mp.x, mp.y, gCell * (0.22 + markerFlash * 0.35), 0, 7); ctx.fill();
   markerFlash *= 0.85;
 
   ctx.globalAlpha = 1;
