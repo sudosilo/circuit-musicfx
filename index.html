@@ -80,11 +80,11 @@ var offctx = off.getContext('2d');
 var W = 0, H = 0, DPR = 1;
 
 var BANDS = [
-  { name:'BASS',     color:'#ff7a18', lo:20,   hi:120  },
-  { name:'LOW-MID',  color:'#ffc24b', lo:120,  hi:400  },
-  { name:'MID',      color:'#39ffb0', lo:400,  hi:2000 },
-  { name:'HIGH-MID', color:'#33d6ff', lo:2000, hi:6000 },
-  { name:'TREBLE',   color:'#c77dff', lo:6000, hi:20000 }
+  { name:'BASS',     color:'#ff7a18', lo:20,   hi:120,   timeBase:1.4,  widthMul:1.8, tailMul:3.0, sustain:7,  burst:3, chipFlash:true,  gap:130 },
+  { name:'LOW-MID',  color:'#ffc24b', lo:120,  hi:400,   timeBase:1.1,  widthMul:1.3, tailMul:2.6, sustain:11, burst:3, chipFlash:false, gap:110 },
+  { name:'MID',      color:'#39ffb0', lo:400,  hi:2000,  timeBase:0.95, widthMul:1.0, tailMul:2.3, sustain:14, burst:3, chipFlash:false, gap:100 },
+  { name:'HIGH-MID', color:'#33d6ff', lo:2000, hi:6000,  timeBase:0.70, widthMul:0.8, tailMul:1.7, sustain:18, burst:4, chipFlash:false, gap:80  },
+  { name:'TREBLE',   color:'#c77dff', lo:6000, hi:20000, timeBase:0.42, widthMul:0.6, tailMul:1.1, sustain:24, burst:9, chipFlash:false, gap:65  }
 ];
 
 var traces = [];      // each: { px:[{x,y}], band, len, cum:[] }
@@ -96,6 +96,11 @@ var gCell = 20;       // current grid cell size, set in buildCircuit
 
 var energies = [0,0,0,0,0];
 var spawnAcc = [0,0,0,0,0];
+var rawBand  = [0,0,0,0,0];   // un-smoothed level, used to spot hits
+var bandAvg  = [0,0,0,0,0];   // slow average each band sits at
+var bandFlash = [0,0,0,0,0];  // whole-circuit flash, spikes on a hit
+var nextHit  = [0,0,0,0,0];   // refractory clock so hits do not retrigger every frame
+var globalFlash = 0;          // brief board-wide lift on a strong bass hit
 
 var seed = (Math.random() * 1e9) | 0;
 function rng() {
@@ -157,22 +162,70 @@ function bandEnergy(b) {
 }
 
 function updateEnergies() {
-  var target = [0,0,0,0,0];
   if (mode === 'audio' && analyser) {
     analyser.getByteFrequencyData(freqData);
-    for (var b = 0; b < 5; b++) target[b] = bandEnergy(b);
+    for (var b = 0; b < 5; b++) rawBand[b] = bandEnergy(b);
   } else {
     var t = performance.now() / 1000;
-    target[0] = Math.pow(Math.max(0, Math.sin(t * 3.0)), 6) * 0.9 + 0.08;
-    target[1] = (Math.sin(t * 1.7 + 1) * 0.5 + 0.5) * 0.7;
-    target[2] = (Math.sin(t * 2.3 + 2) * 0.5 + 0.5) * 0.75;
-    target[3] = Math.pow(Math.max(0, Math.sin(t * 6.1 + 1)), 3) * 0.7 + 0.05;
-    target[4] = Math.pow(Math.max(0, Math.sin(t * 9.3)), 4) * 0.6 + 0.03;
+    rawBand[0] = Math.pow(Math.max(0, Math.sin(t * 3.0)), 6) * 0.95 + 0.04;       // kick
+    rawBand[1] = (Math.sin(t * 1.7 + 1) * 0.5 + 0.5) * 0.7;
+    rawBand[2] = (Math.sin(t * 2.3 + 2) * 0.5 + 0.5) * 0.75;
+    rawBand[3] = Math.pow(Math.max(0, Math.sin(t * 6.1 + 1)), 3) * 0.8 + 0.03;
+    rawBand[4] = Math.pow(Math.max(0, Math.sin(t * 11.0)), 5) * 0.85 + 0.02;      // hats
   }
-  // fast attack, slow release, so percussion snaps
+
+  var now = performance.now();
   for (var k = 0; k < 5; k++) {
-    var a = target[k] > energies[k] ? 0.6 : 0.09;
-    energies[k] += (target[k] - energies[k]) * a;
+    var a = rawBand[k] > energies[k] ? 0.6 : 0.09;
+    energies[k] += (rawBand[k] - energies[k]) * a;          // smoothed level for sustained flow
+    bandAvg[k] += (rawBand[k] - bandAvg[k]) * 0.05;          // slow baseline to compare against
+
+    // a hit is a sharp jump above where the band normally sits
+    if (rawBand[k] > bandAvg[k] * 1.35 + 0.05 && rawBand[k] > 0.12 && now >= nextHit[k]) {
+      triggerHit(k, Math.min(1, (rawBand[k] - bandAvg[k]) / 0.5));
+      nextHit[k] = now + BANDS[k].gap;
+    }
+    bandFlash[k] *= 0.86;
+  }
+  globalFlash *= 0.82;
+  for (var v = 0; v < vias.length; v++) if (vias[v].flash > 0.01) vias[v].flash *= 0.84;
+  for (var c = 0; c < chips.length; c++) if (chips[c].flash > 0.01) chips[c].flash *= 0.85;
+}
+
+function spawnOne(b, intensity) {
+  var list = bandTraces[b];
+  if (!list.length) return;
+  var tr = traces[list[(rng() * list.length) | 0]];
+  var time = BANDS[b].timeBase * (1 - intensity * 0.55);
+  pulses.push({
+    tr: tr,
+    pos: 0,
+    speed: tr.len / Math.max(0.28, time),
+    band: b,
+    intensity: 0.4 + intensity * 0.6
+  });
+}
+
+function triggerHit(b, strength) {
+  var st = BANDS[b];
+  bandFlash[b] = Math.min(1.4, bandFlash[b] + 0.7 + strength * 0.5);
+  if (b === 0) globalFlash = Math.min(1, globalFlash + strength * 0.5);
+
+  var n = Math.round(st.burst * (0.5 + strength));
+  for (var i = 0; i < n && pulses.length < 360; i++) spawnOne(b, 0.6 + strength * 0.4);
+
+  // flash a handful of this band's nodes
+  var want = 6 + ((strength * 8) | 0), flashed = 0, guard = 0;
+  while (flashed < want && guard < vias.length * 2) {
+    guard++;
+    var vi = (rng() * vias.length) | 0;
+    if (vias[vi].band === b) { vias[vi].flash = 1; flashed++; }
+  }
+  // bass lights its chip pads
+  if (st.chipFlash) {
+    for (var c = 0; c < chips.length; c++) {
+      if (chips[c].band === b) chips[c].flash = Math.min(1, 0.7 + strength * 0.5);
+    }
   }
 }
 
@@ -199,6 +252,18 @@ function buildCircuit() {
   traces = []; vias = []; chips = [];
   bandTraces = [[],[],[],[],[]];
 
+  // five region seeds, one per band, so each frequency owns a contiguous zone
+  var seeds = [];
+  for (var sg = 0; sg < 5; sg++) seeds.push({ x: rng() * W, y: rng() * H });
+  function nearestBand(px, py) {
+    var best = 0, bd = 1e18;
+    for (var q = 0; q < 5; q++) {
+      var dx = px - seeds[q].x, dy = py - seeds[q].y, d = dx*dx + dy*dy;
+      if (d < bd) { bd = d; best = q; }
+    }
+    return best;
+  }
+
   var target = Math.floor(cols * rows / 13);
   var attempts = 0;
   while (traces.length < target && attempts < target * 7) {
@@ -219,7 +284,8 @@ function buildCircuit() {
       x = nx; y = ny; occ[idx(x, y)] = 1; pts.push({ x:x, y:y });
     }
     if (pts.length < 3) continue;
-    var band = (rng() * 5) | 0;
+    var mid = pts[(pts.length / 2) | 0];
+    var band = nearestBand(mid.x * cell, mid.y * cell);
     var ti = traces.length;
     traces.push(makeTrace(pts, band, cell));
     bandTraces[band].push(ti);
@@ -227,20 +293,18 @@ function buildCircuit() {
 
   for (var i = 0; i < traces.length; i++) {
     var tr = traces[i];
-    if (rng() < 0.6) vias.push({ x:tr.px[0].x, y:tr.px[0].y, r:cell * 0.16 });
-    if (rng() < 0.45) {
+    if (rng() < 0.7) vias.push({ x:tr.px[0].x, y:tr.px[0].y, r:cell * 0.16, band:tr.band, flash:0 });
+    if (rng() < 0.5) {
       var p = tr.px[tr.px.length - 1];
-      vias.push({ x:p.x, y:p.y, r:cell * 0.13 });
+      vias.push({ x:p.x, y:p.y, r:cell * 0.13, band:tr.band, flash:0 });
     }
   }
 
-  var chipCount = 5 + ((rng() * 8) | 0);
+  var chipCount = 6 + ((rng() * 8) | 0);
   for (var c = 0; c < chipCount; c++) {
-    chips.push({
-      x:(1 + rng() * (cols - 2)) * cell,
-      y:(1 + rng() * (rows - 2)) * cell,
-      s:cell * (0.8 + rng() * 0.7)
-    });
+    var chx = (1 + rng() * (cols - 2)) * cell;
+    var chy = (1 + rng() * (rows - 2)) * cell;
+    chips.push({ x:chx, y:chy, s:cell * (0.8 + rng() * 0.7), band:nearestBand(chx, chy), flash:0 });
   }
 
   renderStaticBoard(cell);
@@ -326,20 +390,11 @@ function pointAt(tr, dist) {
 
 function spawnPulses(dt) {
   for (var b = 0; b < 5; b++) {
-    var list = bandTraces[b];
-    if (!list.length) continue;
-    spawnAcc[b] += energies[b] * energies[b] * (dt / 1000) * 20;
-    while (spawnAcc[b] > 1 && pulses.length < 200) {
+    if (!bandTraces[b].length) continue;
+    spawnAcc[b] += energies[b] * energies[b] * (dt / 1000) * BANDS[b].sustain;
+    while (spawnAcc[b] > 1 && pulses.length < 360) {
       spawnAcc[b] -= 1;
-      var tr = traces[list[(rng() * list.length) | 0]];
-      var time = 1.6 - energies[b] * 1.05;
-      pulses.push({
-        tr: tr,
-        pos: 0,
-        speed: tr.len / Math.max(0.45, time), // px per second
-        band: b,
-        intensity: 0.35 + energies[b] * 0.65
-      });
+      spawnOne(b, energies[b]);
     }
   }
 }
@@ -356,8 +411,9 @@ function updatePulses(dt) {
 
 function drawPulse(p) {
   var tr = p.tr;
-  var col = BANDS[p.band].color;
-  var tail = gCell * 2.4;
+  var st = BANDS[p.band];
+  var col = st.color;
+  var tail = gCell * st.tailMul;
   var head = Math.min(p.pos, tr.len);
 
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -367,7 +423,7 @@ function drawPulse(p) {
   var win = subPath(tr, head - tail, head);
   if (!win) { ctx.globalAlpha = 1; return; }
   ctx.globalAlpha = 0.12 * p.intensity;
-  ctx.lineWidth = gCell * 0.34;
+  ctx.lineWidth = gCell * 0.34 * st.widthMul;
   strokePts(win);
 
   // bright core that ramps up toward the head, so light flows along the wire
@@ -379,7 +435,7 @@ function drawPulse(p) {
     if (!seg) continue;
     var f = (s + 1) / chunks;
     ctx.globalAlpha = p.intensity * f * 0.95;
-    ctx.lineWidth = gCell * (0.05 + 0.06 * f);
+    ctx.lineWidth = gCell * (0.05 + 0.06 * f) * st.widthMul;
     strokePts(seg);
   }
   ctx.globalAlpha = 1;
@@ -400,8 +456,53 @@ function frame(t) {
   ctx.drawImage(off, 0, 0, W, H);
 
   ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+  // whole-circuit flash: light every trace of a band that just got hit
+  for (var fi = 0; fi < traces.length; fi++) {
+    var ftr = traces[fi];
+    var bf = bandFlash[ftr.band];
+    if (bf < 0.03) continue;
+    ctx.strokeStyle = BANDS[ftr.band].color;
+    ctx.globalAlpha = Math.min(0.5, bf * 0.5);
+    ctx.lineWidth = gCell * 0.10;
+    strokePts(ftr.px);
+  }
+
+  // node flashes
+  for (var vi = 0; vi < vias.length; vi++) {
+    var o = vias[vi];
+    if (o.flash < 0.03) continue;
+    ctx.fillStyle = BANDS[o.band].color;
+    ctx.globalAlpha = o.flash * 0.9;
+    ctx.beginPath(); ctx.arc(o.x, o.y, o.r * (1.2 + o.flash), 0, 7); ctx.fill();
+    ctx.globalAlpha = o.flash * 0.35;
+    ctx.beginPath(); ctx.arc(o.x, o.y, o.r * (2.6 + o.flash * 2), 0, 7); ctx.fill();
+  }
+
+  // chip flashes
+  for (var ci = 0; ci < chips.length; ci++) {
+    var ch = chips[ci];
+    if (ch.flash < 0.03) continue;
+    ctx.fillStyle = BANDS[ch.band].color;
+    ctx.globalAlpha = ch.flash * 0.6;
+    roundRect(ctx, ch.x - ch.s/2, ch.y - ch.s/2, ch.s, ch.s, gCell * 0.12);
+    ctx.fill();
+  }
+
+  // traveling pulses
   for (var i = 0; i < pulses.length; i++) drawPulse(pulses[i]);
+
+  ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
+
+  // brief board-wide lift on a strong bass hit
+  if (globalFlash > 0.02) {
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = 'rgba(255,150,60,' + (globalFlash * 0.05).toFixed(3) + ')';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'source-over';
+  }
 
   updateLegend();
 }
