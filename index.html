@@ -256,7 +256,7 @@ function onBeat() {
 function emitCore() {
   if (!coreTraces.length) return;
   coreFlash = Math.min(1.5, coreFlash + 0.9);
-  var count = Math.min(coreTraces.length, 7);
+  var count = Math.min(coreTraces.length, 10);
   for (var i = 0; i < count && pulses.length < 360; i++) {
     var ct = coreTraces[(rng() * coreTraces.length) | 0];
     var tr = traces[ct.idx];
@@ -303,12 +303,39 @@ function triggerHit(b, strength) {
 // ---------- circuit generation ----------
 function makeTrace(pts, band, cell) {
   var px = pts.map(function(p){ return { x:p.x * cell, y:p.y * cell }; });
+  return makePxTrace(px, band);
+}
+
+// build a trace straight from pixel points (used for core leads)
+function makePxTrace(px, band) {
   var len = 0, cum = [0];
   for (var i = 1; i < px.length; i++) {
     len += Math.hypot(px[i].x - px[i-1].x, px[i].y - px[i-1].y);
     cum.push(len);
   }
   return { px:px, band:band, len:len, cum:cum };
+}
+
+// route a lead out from a core pin: a short stub, then 45 degree steps fanning outward
+function routeLead(bx, by, dir, cell) {
+  var pts = [{ x:bx, y:by }];
+  var ang = Math.atan2(dir[1], dir[0]);
+  var outAng = ang;
+  var x = bx + Math.cos(ang) * cell * 0.7;
+  var y = by + Math.sin(ang) * cell * 0.7;
+  pts.push({ x:x, y:y });                       // the pin stub
+  var steps = 4 + ((rng() * 5) | 0);
+  for (var k = 0; k < steps; k++) {
+    var r = rng();
+    if (r < 0.28) ang += Math.PI / 4;
+    else if (r < 0.56) ang -= Math.PI / 4;
+    if (Math.cos(ang - outAng) < 0.2) ang = outAng + (rng() < 0.5 ? 1 : -1) * Math.PI / 4;
+    var seg = cell * (0.9 + rng() * 0.8);
+    var nx = x + Math.cos(ang) * seg, ny = y + Math.sin(ang) * seg;
+    if (nx < cell || nx > W - cell || ny < cell || ny > H - cell) break;
+    x = nx; y = ny; pts.push({ x:x, y:y });
+  }
+  return pts;
 }
 
 function buildCircuit() {
@@ -389,17 +416,29 @@ function buildCircuit() {
 
   buildComponents(cell);
 
-  // central processor at screen center; traces ending near it fire outward
-  coreChip = { x: W / 2, y: H / 2, s: cell * 2.6 };
+  // central processor at screen center, with a routed lead growing from each pin
+  coreChip = { x: W / 2, y: H / 2, s: cell * 2.6, pads: [] };
   coreTraces = [];
-  var coreR = cell * 9;
-  for (var cb = 0; cb < traces.length; cb++) {
-    var ctr = traces[cb];
-    var ea = ctr.px[0], eb = ctr.px[ctr.px.length - 1];
-    var da = Math.hypot(ea.x - coreChip.x, ea.y - coreChip.y);
-    var db = Math.hypot(eb.x - coreChip.x, eb.y - coreChip.y);
-    if (da < coreR && da <= db) coreTraces.push({ idx: cb, rev: false });
-    else if (db < coreR) coreTraces.push({ idx: cb, rev: true });
+  var hs = coreChip.s / 2, perSide = 5;
+  var sideDefs = [ ['top', [0,-1]], ['bottom', [0,1]], ['left', [-1,0]], ['right', [1,0]] ];
+  for (var sd = 0; sd < sideDefs.length; sd++) {
+    var edge = sideDefs[sd][0], ed = sideDefs[sd][1];
+    for (var pin = 0; pin < perSide; pin++) {
+      var tt = (pin + 1) / (perSide + 1), bx, by;
+      if (edge === 'top')         { bx = coreChip.x - hs + coreChip.s * tt; by = coreChip.y - hs; }
+      else if (edge === 'bottom') { bx = coreChip.x - hs + coreChip.s * tt; by = coreChip.y + hs; }
+      else if (edge === 'left')   { bx = coreChip.x - hs; by = coreChip.y - hs + coreChip.s * tt; }
+      else                        { bx = coreChip.x + hs; by = coreChip.y - hs + coreChip.s * tt; }
+      coreChip.pads.push({ x:bx, y:by });
+      var lead = routeLead(bx, by, ed, cell);
+      if (lead.length < 2) continue;
+      var endp = lead[lead.length - 1];
+      var lband = nearestBand(endp.x, endp.y);
+      var li = traces.length;
+      traces.push(makePxTrace(lead, lband));
+      bandTraces[lband].push(li);
+      coreTraces.push({ idx: li, rev: false });
+    }
   }
 
   renderStaticBoard(cell);
@@ -558,22 +597,17 @@ function renderStaticBoard(cell) {
   }
   for (var cp = 0; cp < components.length; cp++) drawComponent(offctx, components[cp]);
 
-  // central core processor, larger with pins on all four sides
+  // central core processor, with solder pads where the leads attach
   if (coreChip) {
-    var cc = coreChip, hs = cc.s / 2;
-    roundRect(offctx, cc.x - hs, cc.y - hs, cc.s, cc.s, cell * 0.14);
+    var cc = coreChip, hs2 = cc.s / 2;
+    roundRect(offctx, cc.x - hs2, cc.y - hs2, cc.s, cc.s, cell * 0.14);
     offctx.fillStyle = 'rgba(10,28,42,0.98)'; offctx.fill();
     offctx.lineWidth = Math.max(1, cell * 0.06);
     offctx.strokeStyle = 'rgba(90,185,225,0.7)'; offctx.stroke();
-    var cpins = 5, cpl = cell * 0.26;
-    offctx.lineWidth = Math.max(1, cell * 0.045);
-    for (var cpn = 0; cpn < cpins; cpn++) {
-      var ct = (cpn + 1) / (cpins + 1);
-      var ppx = cc.x - hs + cc.s * ct, ppy = cc.y - hs + cc.s * ct;
-      ln(offctx, ppx, cc.y - hs, ppx, cc.y - hs - cpl);
-      ln(offctx, ppx, cc.y + hs, ppx, cc.y + hs + cpl);
-      ln(offctx, cc.x - hs, ppy, cc.x - hs - cpl, ppy);
-      ln(offctx, cc.x + hs, ppy, cc.x + hs + cpl, ppy);
+    offctx.fillStyle = 'rgba(120,200,235,0.55)';
+    for (var pdi = 0; pdi < cc.pads.length; pdi++) {
+      var pad = cc.pads[pdi];
+      offctx.fillRect(pad.x - cell * 0.07, pad.y - cell * 0.07, cell * 0.14, cell * 0.14);
     }
   }
 }
