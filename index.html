@@ -79,6 +79,9 @@ var traces = [];      // each: { px:[{x,y}], band, len, cum:[] }
 var vias = [];        // { x, y, r }
 var chips = [];       // { x, y, s }
 var components = [];  // PCB symbols: resistors, caps, diodes, inductors, grounds
+var coreChip = null;  // central processor everything radiates from
+var coreTraces = [];  // traces with an end near the core, oriented to fire outward
+var coreFlash = 0;    // the core pulses on the beat
 var bandTraces = [];  // arrays of trace indices per band
 var pulses = [];
 var gCell = 20;       // current grid cell size, set in buildCircuit
@@ -193,6 +196,7 @@ function updateEnergies() {
     bandFlash[k] *= 0.90;                                // slower decay = flashier
   }
   globalFlash *= 0.84;
+  coreFlash *= 0.88;
   for (var v = 0; v < vias.length; v++) if (vias[v].flash > 0.01) vias[v].flash *= 0.88;
   for (var c = 0; c < chips.length; c++) if (chips[c].flash > 0.01) chips[c].flash *= 0.89;
 
@@ -244,6 +248,19 @@ function onBeat() {
   for (var i = 0; i < tempoCircuits.length; i++) {
     var tr = traces[tempoCircuits[i].idx];
     tempoCircuits[i].beadOffset = tr.len * 0.5;
+  }
+  emitCore();
+}
+
+// the core fires a burst of pulses outward along its traces
+function emitCore() {
+  if (!coreTraces.length) return;
+  coreFlash = Math.min(1.5, coreFlash + 0.9);
+  var count = Math.min(coreTraces.length, 7);
+  for (var i = 0; i < count && pulses.length < 360; i++) {
+    var ct = coreTraces[(rng() * coreTraces.length) | 0];
+    var tr = traces[ct.idx];
+    pulses.push({ tr: tr, pos: 0, speed: tr.len / 0.6, band: tr.band, intensity: 1, rev: ct.rev });
   }
 }
 
@@ -371,6 +388,20 @@ function buildCircuit() {
   }
 
   buildComponents(cell);
+
+  // central processor at screen center; traces ending near it fire outward
+  coreChip = { x: W / 2, y: H / 2, s: cell * 2.6 };
+  coreTraces = [];
+  var coreR = cell * 9;
+  for (var cb = 0; cb < traces.length; cb++) {
+    var ctr = traces[cb];
+    var ea = ctr.px[0], eb = ctr.px[ctr.px.length - 1];
+    var da = Math.hypot(ea.x - coreChip.x, ea.y - coreChip.y);
+    var db = Math.hypot(eb.x - coreChip.x, eb.y - coreChip.y);
+    if (da < coreR && da <= db) coreTraces.push({ idx: cb, rev: false });
+    else if (db < coreR) coreTraces.push({ idx: cb, rev: true });
+  }
+
   renderStaticBoard(cell);
 }
 
@@ -526,6 +557,25 @@ function renderStaticBoard(cell) {
     }
   }
   for (var cp = 0; cp < components.length; cp++) drawComponent(offctx, components[cp]);
+
+  // central core processor, larger with pins on all four sides
+  if (coreChip) {
+    var cc = coreChip, hs = cc.s / 2;
+    roundRect(offctx, cc.x - hs, cc.y - hs, cc.s, cc.s, cell * 0.14);
+    offctx.fillStyle = 'rgba(10,28,42,0.98)'; offctx.fill();
+    offctx.lineWidth = Math.max(1, cell * 0.06);
+    offctx.strokeStyle = 'rgba(90,185,225,0.7)'; offctx.stroke();
+    var cpins = 5, cpl = cell * 0.26;
+    offctx.lineWidth = Math.max(1, cell * 0.045);
+    for (var cpn = 0; cpn < cpins; cpn++) {
+      var ct = (cpn + 1) / (cpins + 1);
+      var ppx = cc.x - hs + cc.s * ct, ppy = cc.y - hs + cc.s * ct;
+      ln(offctx, ppx, cc.y - hs, ppx, cc.y - hs - cpl);
+      ln(offctx, ppx, cc.y + hs, ppx, cc.y + hs + cpl);
+      ln(offctx, cc.x - hs, ppy, cc.x - hs - cpl, ppy);
+      ln(offctx, cc.x + hs, ppy, cc.x + hs + cpl, ppy);
+    }
+  }
 }
 
 // ---------- path helpers ----------
@@ -586,24 +636,29 @@ function drawPulse(p) {
   var st = BANDS[p.band];
   var col = st.color;
   var tail = gCell * st.tailMul;
-  var head = Math.min(p.pos, tr.len);
+
+  // head distance along the trace; reverse pulses start at the far end and run back
+  var head = p.rev ? (tr.len - p.pos) : p.pos;
+  head = Math.max(0, Math.min(tr.len, head));
+  var dir = p.rev ? 1 : -1;            // tail trails behind the head in this direction
+  var tailEnd = head + dir * tail;
 
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.strokeStyle = col;
 
-  // soft underglow across the whole lit window
-  var win = subPath(tr, head - tail, head);
+  // soft underglow across the lit window
+  var win = subPath(tr, Math.min(head, tailEnd), Math.max(head, tailEnd));
   if (!win) { ctx.globalAlpha = 1; return; }
-  ctx.globalAlpha = 0.12 * p.intensity;
+  ctx.globalAlpha = 0.14 * p.intensity;
   ctx.lineWidth = gCell * 0.34 * st.widthMul;
   strokePts(win);
 
-  // bright core that ramps up toward the head, so light flows along the wire
+  // bright core that ramps up toward the head
   var chunks = 5;
   for (var s = 0; s < chunks; s++) {
-    var a0 = head - tail * (chunks - s) / chunks;
-    var a1 = head - tail * (chunks - s - 1) / chunks;
-    var seg = subPath(tr, a0, a1);
+    var dA = tailEnd + (head - tailEnd) * (s / chunks);
+    var dB = tailEnd + (head - tailEnd) * ((s + 1) / chunks);
+    var seg = subPath(tr, Math.min(dA, dB), Math.max(dA, dB));
     if (!seg) continue;
     var f = (s + 1) / chunks;
     ctx.globalAlpha = p.intensity * f * 0.95;
@@ -676,7 +731,32 @@ function frame(t) {
     ctx.globalCompositeOperation = 'source-over';
   }
 
+  drawCore();
   drawTempo(dt);
+}
+
+// the central processor glows with the music and flares on the beat
+function drawCore() {
+  if (!coreChip) return;
+  var e = Math.max(energies[0], energies[2], energies[4]);
+  var glow = Math.min(1, 0.2 + e * 0.5 + coreFlash * 0.6);
+  var x = coreChip.x, y = coreChip.y, s = coreChip.s;
+
+  ctx.globalCompositeOperation = 'lighter';
+  var rad = s * (1.1 + coreFlash * 0.9);
+  var g = ctx.createRadialGradient(x, y, s * 0.2, x, y, rad);
+  g.addColorStop(0, 'rgba(120,225,255,' + (glow * 0.5).toFixed(3) + ')');
+  g.addColorStop(1, 'rgba(120,225,255,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(x, y, rad, 0, 7); ctx.fill();
+
+  ctx.globalAlpha = Math.min(0.85, 0.2 + coreFlash * 0.7);
+  ctx.fillStyle = '#bfe9ff';
+  roundRect(ctx, x - s / 2, y - s / 2, s, s, gCell * 0.18);
+  ctx.fill();
+
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
 }
 
 // the tempo circuit carries a train of beads that scrolls at the beat rate
