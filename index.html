@@ -48,6 +48,9 @@
 <div id="ui" class="hidden">
   <button id="hamburger" aria-label="menu">&#9776;</button>
   <div id="menu" class="closed">
+    <button id="mode-circuit" class="modebtn on">Circuit</button>
+    <button id="mode-bars" class="modebtn">ASCII bars</button>
+    <button id="mode-rain" class="modebtn">Matrix rain</button>
     <label for="file">Load track</label>
     <input id="file" type="file" accept="audio/*">
     <button id="mic">Mic</button>
@@ -98,6 +101,32 @@ var coreFlash = 0;    // the core pulses on the beat
 var antennas = [];    // RF antennas that broadcast on the highs
 var ledBank = null;   // an LED spectrum strip, a color visualizer on the board
 var ledLevels = [];   // smoothed level per LED
+
+// view modes: circuit board, ASCII bars, matrix rain
+var viewMode = 'circuit';
+var rainCols = [], rainCharW = 10, rainCharH = 16, rainRows = 0;
+var barPeaks = [];
+var twText = '', twTarget = '', twIndex = 0, twTimer = 0, twHold = 0, cmdIndex = 0;
+
+// famous terminal strings, shown as display text only, never executed
+var COMMANDS = [
+  ':(){ :|:& };:',
+  'sudo rm -rf --no-preserve-root /',
+  'yes | flood',
+  'sl',
+  'fortune | cowsay',
+  'telnet towel.blinkenlights.nl',
+  'shutdown /s /t 3600',
+  'shutdown /a',
+  'del /f /s /q C:\\*.*',
+  'net send * hello',
+  'Write-Host "System32 has been deleted"',
+  '[console]::beep(500,300)',
+  'termux-toast "drop"',
+  'termux-vibrate -d 3000',
+  'sudo make me a sandwich'
+];
+var RAIN_GLYPHS = '01<>[]{}#$%&*/|\\=+-;:._abcdefghijklmnopqrstuvwxyz'.split('');
 var bandTraces = [];  // arrays of trace indices per band
 var bandSeeds = [];   // region seed points, one per band
 var pulses = [];
@@ -272,7 +301,7 @@ function onBeat() {
 
 // the core fires a burst of pulses outward along its traces
 function emitCore() {
-  if (!coreTraces.length) return;
+  if (viewMode !== 'circuit' || !coreTraces.length) return;
   coreFlash = Math.min(1.5, coreFlash + 0.9);
   var count = Math.min(coreTraces.length, 10);
   for (var i = 0; i < count && pulses.length < 360; i++) {
@@ -302,7 +331,9 @@ function triggerHit(b, strength) {
   if (b === 0) globalFlash = Math.min(1, globalFlash + strength * 0.6);
 
   var n = Math.round(st.burst * (0.6 + strength));
-  for (var i = 0; i < n && pulses.length < 360; i++) spawnOne(b, 0.6 + strength * 0.4);
+  if (viewMode === 'circuit') {
+    for (var i = 0; i < n && pulses.length < 360; i++) spawnOne(b, 0.6 + strength * 0.4);
+  }
 
   // flash this band's nodes
   var want = 8 + ((strength * 10) | 0), flashed = 0, guard = 0;
@@ -889,6 +920,9 @@ function frame(t) {
   var dt = Math.min(50, (t - last) || 16); last = t;
 
   updateEnergies();
+  if (viewMode === 'bars') { drawBars(dt); return; }
+  if (viewMode === 'rain') { drawRain(dt); return; }
+
   spawnPulses(dt);
   updatePulses(dt);
 
@@ -959,6 +993,116 @@ function frame(t) {
   drawCore();
   drawFeatures(dt);
   drawTempo(dt);
+}
+
+// ---------- ASCII modes ----------
+function textGrid() {
+  var charH = Math.max(13, Math.round(Math.min(W, H) / 30));
+  ctx.font = charH + 'px ui-monospace, "Courier New", monospace';
+  ctx.textBaseline = 'top';
+  var charW = ctx.measureText('#').width || charH * 0.6;
+  return { charH: charH, charW: charW, cols: Math.floor(W / charW), rows: Math.floor(H / charH) };
+}
+
+// stacked-character EQ bars, one per frequency slice
+function drawBars(dt) {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#020604'; ctx.fillRect(0, 0, W, H);
+
+  var g = textGrid();
+  var groupW = 3;
+  var nbars = Math.max(8, Math.floor(g.cols / groupW));
+  if (barPeaks.length !== nbars) { barPeaks = []; for (var p = 0; p < nbars; p++) barPeaks.push(0); }
+  var spec = ledSpectrum(nbars);
+
+  ctx.font = g.charH + 'px ui-monospace, "Courier New", monospace';
+  ctx.textBaseline = 'top';
+  for (var b = 0; b < nbars; b++) {
+    var lvl = Math.min(1, spec[b]);
+    var hgt = Math.round(lvl * (g.rows - 1));
+    if (lvl > barPeaks[b]) barPeaks[b] = lvl; else barPeaks[b] = Math.max(0, barPeaks[b] - 0.012);
+    var peakRow = g.rows - 1 - Math.round(barPeaks[b] * (g.rows - 1));
+    var x = (b * groupW + 0.5) * g.charW;
+    for (var r = 0; r < hgt; r++) {
+      var row = g.rows - 1 - r;
+      var frac = r / (g.rows - 1);
+      var hue = 120 - frac * 120;
+      ctx.fillStyle = 'hsl(' + hue + ',90%,' + (46 + frac * 14) + '%)';
+      ctx.fillText('#', x, row * g.charH);
+      ctx.fillText('#', x + g.charW, row * g.charH);
+    }
+    ctx.fillStyle = '#d7ffe0';
+    ctx.fillText('-', x, peakRow * g.charH);
+    ctx.fillText('-', x + g.charW, peakRow * g.charH);
+  }
+}
+
+function initRain() {
+  var g = textGrid();
+  rainCharW = g.charW; rainCharH = g.charH; rainRows = g.rows;
+  rainCols = [];
+  var num = g.cols;
+  for (var i = 0; i < num; i++) {
+    rainCols.push({ y: Math.random() * g.rows, speed: 0.3 + Math.random() * 0.6 });
+  }
+}
+function glyph() { return RAIN_GLYPHS[(Math.random() * RAIN_GLYPHS.length) | 0]; }
+
+// matrix waterfall, speed and brightness driven by the audio
+function drawRain(dt) {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  if (!rainCols.length || rainRows === 0) initRain();
+
+  ctx.fillStyle = 'rgba(2,6,4,0.16)'; ctx.fillRect(0, 0, W, H);
+  ctx.font = rainCharH + 'px ui-monospace, "Courier New", monospace';
+  ctx.textBaseline = 'top';
+
+  var e = 0; for (var k = 0; k < 5; k++) if (energies[k] > e) e = energies[k];
+  var boost = 0.5 + e * 2.4;
+  for (var i = 0; i < rainCols.length; i++) {
+    var c = rainCols[i];
+    var row = Math.floor(c.y);
+    if (row >= 0 && row <= rainRows) {
+      ctx.fillStyle = Math.random() < 0.1
+        ? 'rgba(215,255,225,' + (0.7 + e * 0.3).toFixed(2) + ')'
+        : 'rgba(60,220,110,' + (0.5 + e * 0.4).toFixed(2) + ')';
+      ctx.fillText(glyph(), i * rainCharW, row * rainCharH);
+    }
+    c.y += c.speed * boost;
+    if (c.y > rainRows + 2) { c.y = -(Math.random() * 8); c.speed = 0.3 + Math.random() * 0.6; }
+  }
+
+  drawTypewriter(dt);
+}
+
+// one command string types out at a time, purely as display text
+function drawTypewriter(dt) {
+  if (twTarget === '') { twTarget = COMMANDS[cmdIndex]; twIndex = 0; twText = ''; }
+  if (twHold > 0) {
+    twHold -= dt;
+    if (twHold <= 0) { cmdIndex = (cmdIndex + 1) % COMMANDS.length; twTarget = COMMANDS[cmdIndex]; twIndex = 0; twText = ''; }
+  } else {
+    twTimer += dt;
+    if (twTimer > 48) {
+      twTimer = 0;
+      if (twIndex < twTarget.length) { twText += twTarget.charAt(twIndex); twIndex++; }
+      else twHold = 1700;
+    }
+  }
+  var fs = Math.max(14, Math.round(Math.min(W, H) / 26));
+  ctx.font = 'bold ' + fs + 'px ui-monospace, "Courier New", monospace';
+  ctx.textBaseline = 'middle';
+  var cursor = (Math.floor(performance.now() / 500) % 2) ? '_' : ' ';
+  var line = '> ' + twText + cursor;
+  var tw = ctx.measureText(line).width;
+  var x = Math.max(10, (W - tw) / 2), y = H * 0.5;
+  ctx.fillStyle = 'rgba(2,10,4,0.72)';
+  ctx.fillRect(x - 12, y - fs * 0.85, tw + 24, fs * 1.7);
+  ctx.fillStyle = '#8dff9f';
+  ctx.fillText(line, x, y);
+  ctx.textBaseline = 'top';
 }
 
 // the LED bank reads the spectrum: real bins from audio, interpolated bands in demo
@@ -1116,6 +1260,19 @@ document.getElementById('full').addEventListener('click', function(){
   else { if (document.exitFullscreen) document.exitFullscreen(); }
 });
 
+function setMode(m) {
+  viewMode = m;
+  setActive('mode-circuit', m === 'circuit');
+  setActive('mode-bars', m === 'bars');
+  setActive('mode-rain', m === 'rain');
+  pulses = [];                 // drop circuit pulses when leaving that mode
+  if (m === 'rain') initRain();
+  showUI();
+}
+document.getElementById('mode-circuit').addEventListener('click', function(){ setMode('circuit'); });
+document.getElementById('mode-bars').addEventListener('click', function(){ setMode('bars'); });
+document.getElementById('mode-rain').addEventListener('click', function(){ setMode('rain'); });
+
 // hamburger: the menu lives at the top and only shows when you tap the screen
 var ui = document.getElementById('ui');
 var menu = document.getElementById('menu');
@@ -1151,6 +1308,7 @@ function resize() {
   canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
   canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
   buildCircuit();
+  if (viewMode === 'rain') initRain();
 }
 window.addEventListener('resize', function(){
   clearTimeout(resizeTimer);
