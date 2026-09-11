@@ -6,8 +6,8 @@
 <title>Circuit Visualizer</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  html, body { width:100%; height:100%; overflow:hidden; background:#02060a; }
-  #board { display:block; width:100vw; height:100vh; touch-action:none; }
+  html, body { width:100%; margin:0; background:#02060a; overflow-x:hidden; }
+  #board { display:block; width:100vw; height:100vh; touch-action:pan-y; }
 
   /* UI chrome is light, floating over the dark canvas. Hidden until you tap. */
   #ui {
@@ -462,6 +462,7 @@ function buildCircuit() {
       traces.push(makePxTrace(lead, lband));
       bandTraces[lband].push(li);
       coreTraces.push({ idx: li, rev: false });
+      vias.push({ x: endp.x, y: endp.y, r: cell * 0.14, band: lband, flash: 0 });
     }
   }
 
@@ -520,7 +521,7 @@ function buildFeatures(cell) {
   var bx = W / 2 - bw / 2, by = H * 0.93;
   var leds = [];
   for (var k = 0; k < n; k++) leds.push({ x: bx + sp * k, y: by });
-  ledBank = { leds: leds, n: n, x: bx, y: by, w: bw, sp: sp };
+  ledBank = { leds: leds, n: n, x: bx, y: by, w: bw, sp: sp, size: sp * 0.82 };
   ledLevels = [];
   for (var k2 = 0; k2 < n; k2++) ledLevels.push(0);
 }
@@ -731,18 +732,64 @@ function renderStaticBoard(cell) {
   // LED spectrum bank silkscreen
   if (ledBank) {
     var lb = ledBank;
-    roundRect(offctx, lb.x - cell * 0.55, lb.y - cell * 0.55, lb.w + cell * 1.1, cell * 1.1, cell * 0.18);
+    roundRect(offctx, lb.x - cell * 0.6, lb.y - cell * 0.6, lb.w + cell * 1.2, cell * 1.2, cell * 0.18);
     offctx.fillStyle = 'rgba(9,24,36,0.85)'; offctx.fill();
     offctx.lineWidth = Math.max(1, cell * 0.045);
     offctx.strokeStyle = 'rgba(80,170,210,0.5)'; offctx.stroke();
+    // data chain running through the strip, DIN to DOUT
+    var half = lb.size / 2;
+    offctx.strokeStyle = 'rgba(80,160,195,0.5)';
+    offctx.lineWidth = Math.max(1, cell * 0.035);
+    ln(offctx, lb.leds[0].x - half - cell * 0.5, lb.y, lb.leds[0].x - half, lb.y);
+    for (var dl = 0; dl < lb.leds.length - 1; dl++) {
+      ln(offctx, lb.leds[dl].x + half, lb.y, lb.leds[dl + 1].x - half, lb.y);
+    }
+    var lastLed = lb.leds[lb.leds.length - 1];
+    ln(offctx, lastLed.x + half, lb.y, lastLed.x + half + cell * 0.5, lb.y);
     for (var li = 0; li < lb.leds.length; li++) {
-      var Ld = lb.leds[li];
-      offctx.beginPath(); offctx.arc(Ld.x, Ld.y, cell * 0.26, 0, 7);
-      offctx.fillStyle = 'rgba(6,16,24,1)'; offctx.fill();
-      offctx.lineWidth = Math.max(1, cell * 0.03);
-      offctx.strokeStyle = 'rgba(70,150,185,0.5)'; offctx.stroke();
+      drawNeopixel(offctx, lb.leds[li].x, lb.leds[li].y, lb.size, cell);
     }
   }
+}
+
+// a WS2812 style 5050 LED: square package, cut corner, corner pads,
+// round emitter, and a small bond-wire squiggle
+function drawNeopixel(c, x, y, size, cell) {
+  var h = size / 2, cut = size * 0.24;
+  c.lineCap = 'butt'; c.lineJoin = 'miter';
+  c.beginPath();
+  c.moveTo(x - h + cut, y - h);
+  c.lineTo(x + h, y - h);
+  c.lineTo(x + h, y + h);
+  c.lineTo(x - h, y + h);
+  c.lineTo(x - h, y - h + cut);
+  c.closePath();
+  c.fillStyle = 'rgba(10,24,34,0.96)'; c.fill();
+  c.lineWidth = Math.max(1, cell * 0.03);
+  c.strokeStyle = 'rgba(85,165,200,0.6)'; c.stroke();
+
+  var pad = size * 0.17, e = h - pad * 0.5 - size * 0.05;
+  var corners = [[-1,-1],[1,-1],[-1,1],[1,1]];
+  c.fillStyle = 'rgba(70,140,175,0.5)';
+  for (var i = 0; i < 4; i++) {
+    c.fillRect(x + corners[i][0] * e - pad / 2, y + corners[i][1] * e - pad / 2, pad, pad);
+  }
+
+  c.beginPath(); c.arc(x, y, size * 0.32, 0, 7);
+  c.fillStyle = 'rgba(5,14,22,1)'; c.fill();
+  c.lineWidth = Math.max(1, cell * 0.022);
+  c.strokeStyle = 'rgba(95,175,210,0.55)'; c.stroke();
+
+  var d = size * 0.11;
+  c.strokeStyle = 'rgba(110,180,210,0.5)'; c.lineWidth = Math.max(1, cell * 0.02);
+  c.strokeRect(x - d / 2, y - d / 2, d, d);
+  c.beginPath();
+  c.moveTo(x + d / 2, y);
+  c.lineTo(x + size * 0.14, y - size * 0.05);
+  c.lineTo(x + size * 0.20, y + size * 0.05);
+  c.lineTo(x + size * 0.28, y - size * 0.02);
+  c.stroke();
+  c.lineCap = 'round'; c.lineJoin = 'round';
 }
 
 // ---------- path helpers ----------
@@ -961,9 +1008,9 @@ function drawFeatures(dt) {
     ctx.beginPath(); ctx.arc(tipx, tipy, gCell * 0.12, 0, 7); ctx.fill();
   }
 
-  // LED spectrum bank: each LED a hue, brightness from its frequency level
+  // LED spectrum bank: each emitter a hue, brightness from its frequency level
   if (ledBank) {
-    var lb = ledBank, n = lb.n, spec = ledSpectrum(n);
+    var lb = ledBank, n = lb.n, spec = ledSpectrum(n), sz = lb.size;
     for (var i = 0; i < n; i++) {
       var tgt = spec[i];
       var at = tgt > ledLevels[i] ? 0.5 : 0.12;
@@ -972,10 +1019,10 @@ function drawFeatures(dt) {
       var Ld = lb.leds[i];
       var hue = 20 + 270 * i / (n - 1);
       ctx.fillStyle = 'hsl(' + hue + ',95%,60%)';
-      ctx.globalAlpha = Math.min(1, 0.12 + lvl);
-      ctx.beginPath(); ctx.arc(Ld.x, Ld.y, gCell * (0.12 + 0.16 * lvl), 0, 7); ctx.fill();
-      ctx.globalAlpha = Math.min(0.6, lvl * 0.55);
-      ctx.beginPath(); ctx.arc(Ld.x, Ld.y, gCell * (0.3 + 0.32 * lvl), 0, 7); ctx.fill();
+      ctx.globalAlpha = Math.min(1, 0.1 + lvl);
+      ctx.beginPath(); ctx.arc(Ld.x, Ld.y, sz * 0.3 * (0.55 + 0.45 * lvl), 0, 7); ctx.fill();
+      ctx.globalAlpha = Math.min(0.7, lvl * 0.6);
+      ctx.beginPath(); ctx.arc(Ld.x, Ld.y, sz * (0.32 + 0.5 * lvl), 0, 7); ctx.fill();
     }
   }
 
@@ -991,14 +1038,14 @@ function drawCore() {
   var x = coreChip.x, y = coreChip.y, s = coreChip.s;
 
   ctx.globalCompositeOperation = 'lighter';
-  var rad = s * (1.1 + coreFlash * 0.9);
-  var g = ctx.createRadialGradient(x, y, s * 0.2, x, y, rad);
-  g.addColorStop(0, 'rgba(120,225,255,' + (glow * 0.5).toFixed(3) + ')');
+  var rad = s * (0.85 + coreFlash * 0.6);
+  var g = ctx.createRadialGradient(x, y, s * 0.25, x, y, rad);
+  g.addColorStop(0, 'rgba(120,225,255,' + (glow * 0.38).toFixed(3) + ')');
   g.addColorStop(1, 'rgba(120,225,255,0)');
   ctx.fillStyle = g;
   ctx.beginPath(); ctx.arc(x, y, rad, 0, 7); ctx.fill();
 
-  ctx.globalAlpha = Math.min(0.85, 0.2 + coreFlash * 0.7);
+  ctx.globalAlpha = Math.min(0.6, 0.12 + coreFlash * 0.5);
   ctx.fillStyle = '#bfe9ff';
   roundRect(ctx, x - s / 2, y - s / 2, s, s, gCell * 0.18);
   ctx.fill();
@@ -1091,7 +1138,7 @@ hamburger.addEventListener('click', function(){
 // keep the panel open while interacting with it
 menu.addEventListener('click', showUI);
 
-canvas.addEventListener('pointerdown', function(){
+canvas.addEventListener('click', function(){
   if (ui.classList.contains('hidden')) showUI();
   else hideUI();
 });
@@ -1114,6 +1161,142 @@ window.addEventListener('resize', function(){
 resize();
 showUI();
 requestAnimationFrame(frame);
+</script>
+
+<!-- =====================================================================
+     MOHAVE TECHNOLOGY GROUP // CREATOR SEAL
+     ===================================================================== -->
+<script>
+(function () {
+
+  /* ---------- CONFIG: the only part you change ---------- */
+  var CONFIG = {
+    org:      "Mohave Technology Group",
+    monogram: "MTG",
+    mission:  "Practical software and hardware, built in the field.",
+    github:   "https://github.com/sudosilo",
+    linkedin: "https://www.linkedin.com/in/dicktemple"
+  };
+  /* ----------------------------------------------------- */
+
+  var head = document.head || document.getElementsByTagName("head")[0];
+
+  head.appendChild(document.createComment(
+    " Made by " + CONFIG.org + " // " + CONFIG.github + " // " + CONFIG.linkedin + " "
+  ));
+
+  var metaAuthor = document.createElement("meta");
+  metaAuthor.setAttribute("name", "author");
+  metaAuthor.setAttribute("content", CONFIG.org);
+  head.appendChild(metaAuthor);
+
+  [CONFIG.github, CONFIG.linkedin].forEach(function (url) {
+    var l = document.createElement("link");
+    l.setAttribute("rel", "me");
+    l.setAttribute("href", url);
+    head.appendChild(l);
+  });
+
+  var ld = document.createElement("script");
+  ld.type = "application/ld+json";
+  ld.textContent = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "name": CONFIG.org,
+    "sameAs": [CONFIG.github, CONFIG.linkedin]
+  });
+  head.appendChild(ld);
+
+  var css = ''
+    + '.mtg-seal{box-sizing:border-box;width:100%;background:#efe9da;'
+    + 'border-top:1px solid #cabfa3;color:#2b2620;'
+    + 'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
+    + 'padding:18px 20px;display:flex;flex-direction:column;align-items:center;gap:12px;}'
+    + '.mtg-seal-row{display:flex;align-items:center;gap:14px;}'
+    + '.mtg-seal-btn{background:none;border:0;padding:0;margin:0;cursor:pointer;'
+    + 'display:flex;align-items:center;gap:14px;color:inherit;font:inherit;}'
+    + '.mtg-seal-svg{display:block;transition:transform .18s ease;}'
+    + '.mtg-seal.open .mtg-seal-svg{transform:scale(.94);}'
+    + '.mtg-seal-label{text-align:left;line-height:1.3;}'
+    + '.mtg-seal-org{font-family:Georgia,"Times New Roman",serif;font-size:14px;'
+    + 'letter-spacing:.3px;color:#2b2620;}'
+    + '.mtg-seal-ask{font-size:12px;color:#7a2e28;text-decoration:underline;}'
+    + '.mtg-seal-panel{overflow:hidden;max-height:0;opacity:0;'
+    + 'transition:max-height .25s ease,opacity .25s ease;width:100%;max-width:360px;}'
+    + '.mtg-seal.open .mtg-seal-panel{max-height:200px;opacity:1;}'
+    + '.mtg-seal-mission{font-style:italic;color:#4a443b;font-size:13px;'
+    + 'text-align:center;margin:0 0 12px;line-height:1.5;}'
+    + '.mtg-seal-links{display:flex;justify-content:center;gap:10px;}'
+    + '.mtg-seal-links a{flex:1;text-align:center;text-decoration:none;'
+    + 'font-size:13px;color:#2b2620;background:#faf7ef;border:1px solid #cabfa3;'
+    + 'border-radius:6px;padding:8px 10px;transition:background .15s ease;}'
+    + '.mtg-seal-links a:hover{background:#fff;}'
+    + '.mtg-seal-btn:focus-visible{outline:2px solid #7a2e28;outline-offset:3px;border-radius:4px;}'
+    + '.mtg-seal-links a:focus-visible{outline:2px solid #7a2e28;outline-offset:2px;}'
+    + '@media (prefers-reduced-motion: reduce){'
+    + '.mtg-seal-svg,.mtg-seal-panel{transition:none;}}';
+
+  var style = document.createElement("style");
+  style.textContent = css;
+  head.appendChild(style);
+
+  function buildSeal() {
+    var org = CONFIG.org.toUpperCase();
+    return ''
+      + '<svg class="mtg-seal-svg" viewBox="0 0 120 120" width="58" height="58" '
+      +   'role="img" aria-label="' + CONFIG.org + ' seal">'
+      +   '<defs>'
+      +     '<path id="mtgTop" d="M 23,60 A 37,37 0 0 1 97,60" fill="none"/>'
+      +   '</defs>'
+      +   '<circle cx="60" cy="60" r="55" fill="none" stroke="#7a2e28" stroke-width="2.5"/>'
+      +   '<circle cx="60" cy="60" r="48" fill="none" stroke="#7a2e28" stroke-width="1"/>'
+      +   '<text font-family="Georgia,serif" font-size="8" fill="#7a2e28">'
+      +     '<textPath href="#mtgTop" startOffset="50%" text-anchor="middle" '
+      +     'textLength="106" lengthAdjust="spacingAndGlyphs">'
+      +     org + '</textPath>'
+      +   '</text>'
+      +   '<text x="60" y="60" text-anchor="middle" dominant-baseline="central" '
+      +     'font-family="Georgia,serif" font-weight="700" font-size="27" '
+      +     'fill="#7a2e28">' + CONFIG.monogram + '</text>'
+      +   '<g fill="#7a2e28">'
+      +     '<rect x="58" y="83.5" width="4" height="4"/>'
+      +     '<rect x="63" y="88.5" width="4" height="4"/>'
+      +     '<rect x="53" y="93.5" width="4" height="4"/>'
+      +     '<rect x="58" y="93.5" width="4" height="4"/>'
+      +     '<rect x="63" y="93.5" width="4" height="4"/>'
+      +   '</g>'
+      + '</svg>';
+  }
+
+  var seal = document.createElement("footer");
+  seal.className = "mtg-seal";
+  seal.innerHTML = ''
+    + '<div class="mtg-seal-row">'
+    +   '<button class="mtg-seal-btn" type="button" aria-expanded="false">'
+    +     buildSeal()
+    +     '<span class="mtg-seal-label">'
+    +       '<span class="mtg-seal-org">' + CONFIG.org + '</span><br>'
+    +       '<span class="mtg-seal-ask">Who made this?</span>'
+    +     '</span>'
+    +   '</button>'
+    + '</div>'
+    + '<div class="mtg-seal-panel">'
+    +   '<p class="mtg-seal-mission">' + CONFIG.mission + '</p>'
+    +   '<div class="mtg-seal-links">'
+    +     '<a href="' + CONFIG.github + '" target="_blank" rel="noopener me">GitHub</a>'
+    +     '<a href="' + CONFIG.linkedin + '" target="_blank" rel="noopener me">LinkedIn</a>'
+    +   '</div>'
+    + '</div>';
+
+  var btn = seal.querySelector(".mtg-seal-btn");
+  btn.addEventListener("click", function () {
+    var nowOpen = seal.classList.toggle("open");
+    btn.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+  });
+
+  document.body.appendChild(seal);
+
+})();
 </script>
 </body>
 </html>
