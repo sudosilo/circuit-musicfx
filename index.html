@@ -39,6 +39,14 @@
   }
   #menu button:active, #menu label:active { background:#e9eef3; }
   #menu button.on { background:#ff7a18; color:#fff; border-color:#ff7a18; }
+  #menu { max-height:82vh; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+  .secHead {
+    background:#e7ecf1 !important; color:#3a4753 !important;
+    border:1px solid #c2cdd8 !important; font-weight:700; font-size:12px !important;
+    letter-spacing:.5px; text-transform:uppercase; margin-top:2px;
+  }
+  .subgroup { display:flex; flex-direction:column; gap:6px; }
+  .subgroup.collapsed { display:none; }
   #file { display:none; }
 </style>
 </head>
@@ -48,15 +56,42 @@
 <div id="ui" class="hidden">
   <button id="hamburger" aria-label="menu">&#9776;</button>
   <div id="menu" class="closed">
-    <button id="mode-circuit" class="modebtn on">Circuit</button>
-    <button id="mode-bars" class="modebtn">ASCII bars</button>
-    <button id="mode-rain" class="modebtn">Matrix rain</button>
-    <label for="file">Load track</label>
-    <input id="file" type="file" accept="audio/*">
-    <button id="mic">Mic</button>
-    <button id="demo" class="on">Demo</button>
-    <button id="regen">New board</button>
-    <button id="full">Fullscreen</button>
+    <button class="secHead" data-sec="secModes">Modes</button>
+    <div class="subgroup" id="secModes">
+      <button id="mode-circuit" class="modebtn on">Circuit</button>
+      <button id="mode-bars" class="modebtn">ASCII bars</button>
+      <button id="mode-rain" class="modebtn">Matrix rain</button>
+      <button id="mode-tetris" class="modebtn">Tetris</button>
+      <button id="mode-snake" class="modebtn">Snake</button>
+      <button id="mode-pong" class="modebtn">Pong</button>
+      <button id="mode-terminal" class="modebtn">Terminal</button>
+    </div>
+
+    <button class="secHead" data-sec="secThemes">Terminal themes</button>
+    <div class="subgroup collapsed" id="secThemes">
+      <button class="themebtn on" data-theme="linux">Linux</button>
+      <button class="themebtn" data-theme="hacker">Hacker</button>
+      <button class="themebtn" data-theme="kali">Kali</button>
+      <button class="themebtn" data-theme="android">Android</button>
+      <button class="themebtn" data-theme="paper">Paper</button>
+      <button class="themebtn" data-theme="windows">Windows</button>
+      <button class="themebtn" data-theme="powershell">PowerShell</button>
+      <button id="do-build" class="modebtn">Build (type source)</button>
+    </div>
+
+    <button class="secHead" data-sec="secAudio">Audio</button>
+    <div class="subgroup collapsed" id="secAudio">
+      <label for="file">Load track</label>
+      <input id="file" type="file" accept="audio/*">
+      <button id="mic">Mic</button>
+      <button id="demo" class="on">Demo</button>
+    </div>
+
+    <button class="secHead" data-sec="secBoard">Board</button>
+    <div class="subgroup collapsed" id="secBoard">
+      <button id="regen">New board</button>
+      <button id="full">Fullscreen</button>
+    </div>
   </div>
 </div>
 
@@ -108,25 +143,59 @@ var rainCols = [], rainCharW = 10, rainCharH = 16, rainRows = 0;
 var barPeaks = [];
 var twText = '', twTarget = '', twIndex = 0, twTimer = 0, twHold = 0, cmdIndex = 0;
 
-// famous terminal strings, shown as display text only, never executed
+// terminal strings shown as display text only, never executed
 var COMMANDS = [
+  'git clone https://github.com/sudosilo/termbeat.git',
+  'git checkout -b feature/visualizer',
+  'git commit -m "update render loop"',
+  'git push origin main',
+  'npm install',
+  'npm run build',
+  'npm run dev -- --port 5173',
+  'vercel --prod',
+  'vercel logs termbeat.vercel.app',
+  'docker build -t termbeat .',
+  'docker ps',
+  'python3 -m venv .venv',
+  'pip install -r requirements.txt',
+  'pytest -q',
+  'ssh dev@10.0.0.14',
+  'nmap -sV 10.0.0.0/24',
+  'tcpdump -i wlan0 -n -c 20',
+  'df -h',
+  'ps aux | grep node',
+  'adb devices',
+  'adb logcat -d | tail -20',
+  'termux-setup-storage',
+  'termux-toast "drop incoming"',
+  'termux-vibrate -d 3000',
+  'pkg install nodejs python git',
+  'sudo apt update && sudo apt upgrade -y',
+  'systemctl status nginx',
+  'tar czvf backup.tar.gz ./dist',
+  'rsync -avz ./dist dev@target.local:/var/www',
+  'grep -rn "TODO" .',
   ':(){ :|:& };:',
   'sudo rm -rf --no-preserve-root /',
-  'yes | flood',
+  'sudo make me a sandwich',
   'sl',
   'fortune | cowsay',
   'telnet towel.blinkenlights.nl',
   'shutdown /s /t 3600',
   'shutdown /a',
   'del /f /s /q C:\\*.*',
-  'net send * hello',
-  'Write-Host "System32 has been deleted"',
-  '[console]::beep(500,300)',
-  'termux-toast "drop"',
-  'termux-vibrate -d 3000',
-  'sudo make me a sandwich'
+  'Write-Host "System32 has been deleted" -ForegroundColor Red',
+  '[console]::beep(500,300)'
 ];
 var RAIN_GLYPHS = '01<>[]{}#$%&*/|\\=+-;:._abcdefghijklmnopqrstuvwxyz'.split('');
+
+// ASCII game visualizers ported from Terminal Beat, driven by the audio
+var VIZ_COLS = 12, VIZ_ROWS = 16;
+var VIZ_SHAPES = {
+  I: [[1,1,1,1]], O: [[1,1],[1,1]], T: [[0,1,0],[1,1,1]],
+  L: [[1,0],[1,0],[1,1]], S: [[0,1,1],[1,1,0]], Z: [[1,1,0],[0,1,1]]
+};
+var vizBoard = null, vizPiece = null, vizSnake = null, vizFood = null, vizBall = null, gameAcc = 0;
 var bandTraces = [];  // arrays of trace indices per band
 var bandSeeds = [];   // region seed points, one per band
 var pulses = [];
@@ -922,6 +991,8 @@ function frame(t) {
   updateEnergies();
   if (viewMode === 'bars') { drawBars(dt); return; }
   if (viewMode === 'rain') { drawRain(dt); return; }
+  if (viewMode === 'tetris' || viewMode === 'snake' || viewMode === 'pong') { drawGame(dt); return; }
+  if (viewMode === 'terminal') { drawTerminal(dt); return; }
 
   spawnPulses(dt);
   updatePulses(dt);
@@ -1105,6 +1176,365 @@ function drawTypewriter(dt) {
   ctx.textBaseline = 'top';
 }
 
+// ---------- ASCII game modes (Tetris / Snake / Pong) ----------
+function makeVizBoard() {
+  var b = [];
+  for (var i = 0; i < VIZ_ROWS; i++) b.push(new Array(VIZ_COLS).fill(0));
+  return b;
+}
+function vizCollides(p, dx, dy) {
+  return p.shape.some(function (row, ry) {
+    return row.some(function (cell, rx) {
+      if (!cell) return false;
+      var nx = p.x + rx + dx, ny = p.y + ry + dy;
+      if (nx < 0 || nx >= VIZ_COLS || ny >= VIZ_ROWS) return true;
+      if (ny >= 0 && vizBoard[ny][nx]) return true;
+      return false;
+    });
+  });
+}
+function vizLock(p) {
+  p.shape.forEach(function (row, ry) {
+    row.forEach(function (cell, rx) {
+      if (!cell) return;
+      var ny = p.y + ry, nx = p.x + rx;
+      if (ny >= 0 && ny < VIZ_ROWS) vizBoard[ny][nx] = 1;
+    });
+  });
+  for (var y = VIZ_ROWS - 1; y >= 0; y--) {
+    if (vizBoard[y].every(function (c) { return c; })) {
+      vizBoard.splice(y, 1);
+      vizBoard.unshift(new Array(VIZ_COLS).fill(0));
+    }
+  }
+}
+function vizSpawn() {
+  var keys = Object.keys(VIZ_SHAPES);
+  var shape = VIZ_SHAPES[keys[(Math.random() * keys.length) | 0]];
+  var w = shape[0].length;
+  vizPiece = { shape: shape, x: Math.floor(Math.random() * Math.max(1, VIZ_COLS - w + 1)), y: 0 };
+  if (vizCollides(vizPiece, 0, 0)) vizBoard = makeVizBoard();
+}
+function stepTetris(strong) {
+  if (!vizBoard) vizBoard = makeVizBoard();
+  if (!vizPiece) vizSpawn();
+  var drop = strong ? 2 : 1;
+  for (var i = 0; i < drop; i++) {
+    if (!vizCollides(vizPiece, 0, 1)) vizPiece.y += 1;
+    else { vizLock(vizPiece); vizPiece = null; vizSpawn(); break; }
+  }
+}
+function gridTetris() {
+  var grid = vizBoard.map(function (row) { return row.slice(); });
+  if (vizPiece) {
+    vizPiece.shape.forEach(function (row, ry) {
+      row.forEach(function (cell, rx) {
+        if (!cell) return;
+        var ny = vizPiece.y + ry, nx = vizPiece.x + rx;
+        if (ny >= 0 && ny < VIZ_ROWS && nx >= 0 && nx < VIZ_COLS) grid[ny][nx] = 2;
+      });
+    });
+  }
+  return grid.map(function (row) {
+    return row.map(function (c) { return c === 0 ? ' ' : (c === 2 ? '\u2593' : '\u2588'); }).join('');
+  });
+}
+
+function vizRandomCell() { return { x: (Math.random() * VIZ_COLS) | 0, y: (Math.random() * VIZ_ROWS) | 0 }; }
+function vizSnakeReset() {
+  vizSnake = { body: [{ x: VIZ_COLS / 2 | 0, y: VIZ_ROWS / 2 | 0 }], dir: { x: 1, y: 0 } };
+  vizFood = vizRandomCell();
+}
+function stepSnake() {
+  if (!vizSnake) vizSnakeReset();
+  var head = vizSnake.body[0];
+  var opts = [{ x:1,y:0 },{ x:-1,y:0 },{ x:0,y:1 },{ x:0,y:-1 }];
+  var cand = opts.filter(function (d) {
+    if (vizSnake.body.length > 1 && d.x === -vizSnake.dir.x && d.y === -vizSnake.dir.y) return false;
+    var nx = head.x + d.x, ny = head.y + d.y;
+    if (nx < 0 || nx >= VIZ_COLS || ny < 0 || ny >= VIZ_ROWS) return false;
+    return !vizSnake.body.some(function (s) { return s.x === nx && s.y === ny; });
+  });
+  if (!cand.length) { vizSnakeReset(); return; }
+  cand.sort(function (a, b) {
+    var da = Math.abs(head.x + a.x - vizFood.x) + Math.abs(head.y + a.y - vizFood.y);
+    var db = Math.abs(head.x + b.x - vizFood.x) + Math.abs(head.y + b.y - vizFood.y);
+    return da - db;
+  });
+  var dir = (cand.length > 1 && Math.random() < 0.15) ? cand[1] : cand[0];
+  vizSnake.dir = dir;
+  var nh = { x: head.x + dir.x, y: head.y + dir.y };
+  vizSnake.body.unshift(nh);
+  if (nh.x === vizFood.x && nh.y === vizFood.y) vizFood = vizRandomCell();
+  else vizSnake.body.pop();
+}
+function gridSnake() {
+  var grid = [];
+  for (var y = 0; y < VIZ_ROWS; y++) grid.push(new Array(VIZ_COLS).fill(' '));
+  vizSnake.body.forEach(function (seg, i) { grid[seg.y][seg.x] = i === 0 ? '\u2593' : '\u2588'; });
+  grid[vizFood.y][vizFood.x] = '\u2591';
+  return grid.map(function (row) { return row.join(''); });
+}
+
+function vizPongReset() {
+  vizBall = { x: VIZ_COLS / 2 | 0, y: VIZ_ROWS / 2 | 0,
+              vx: Math.random() < 0.5 ? 1 : -1, vy: Math.random() < 0.5 ? 1 : -1 };
+}
+function stepPong(strong) {
+  if (!vizBall) vizPongReset();
+  var mult = strong ? 2 : 1;
+  for (var i = 0; i < mult; i++) {
+    vizBall.x += vizBall.vx; vizBall.y += vizBall.vy;
+    if (vizBall.x <= 0 || vizBall.x >= VIZ_COLS - 1) vizBall.vx *= -1;
+    if (vizBall.y <= 0 || vizBall.y >= VIZ_ROWS - 1) vizBall.vy *= -1;
+    vizBall.x = Math.max(0, Math.min(VIZ_COLS - 1, vizBall.x));
+    vizBall.y = Math.max(0, Math.min(VIZ_ROWS - 1, vizBall.y));
+  }
+}
+function gridPong() {
+  var grid = [];
+  for (var y = 0; y < VIZ_ROWS; y++) grid.push(new Array(VIZ_COLS).fill(' '));
+  grid[Math.round(vizBall.y)][Math.round(vizBall.x)] = '\u2588';
+  return grid.map(function (row) { return row.join(''); });
+}
+
+function drawGame(dt) {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#020604'; ctx.fillRect(0, 0, W, H);
+
+  var e = 0; for (var k = 0; k < 5; k++) if (energies[k] > e) e = energies[k];
+  gameAcc += dt;
+  var interval = Math.max(70, (viewMode === 'snake' ? 210 : 230) - e * 150);
+  while (gameAcc >= interval) {
+    gameAcc -= interval;
+    if (viewMode === 'tetris') stepTetris(e > 0.5);
+    else if (viewMode === 'snake') stepSnake();
+    else stepPong(e > 0.5);
+  }
+
+  var rows = viewMode === 'tetris' ? gridTetris() : (viewMode === 'snake' ? gridSnake() : gridPong());
+  drawGrid(rows, viewMode.toUpperCase());
+}
+
+function drawGrid(rows, label) {
+  var n = rows.length, m = rows[0].length;
+  var charH = Math.floor(H * 0.82 / n);
+  var charW = charH * 0.62;
+  var gw = m * charW, gh = n * charH;
+  var x0 = (W - gw) / 2, y0 = (H - gh) / 2;
+
+  ctx.strokeStyle = 'rgba(74,222,128,0.4)'; ctx.lineWidth = 2;
+  ctx.strokeRect(x0 - charW * 0.6, y0 - charH * 0.6, gw + charW * 1.2, gh + charH * 1.2);
+
+  ctx.font = charH + 'px ui-monospace, "Courier New", monospace';
+  ctx.textBaseline = 'top';
+  for (var y = 0; y < n; y++) {
+    var row = rows[y];
+    for (var x = 0; x < m; x++) {
+      var ch = row.charAt(x);
+      if (ch === ' ') continue;
+      ctx.fillStyle = ch === '\u2593' ? '#d6ffe0' : (ch === '\u2591' ? '#2f8f52' : '#4ade80');
+      ctx.fillText(ch, x0 + x * charW, y0 + y * charH);
+    }
+  }
+  ctx.fillStyle = 'rgba(74,222,128,0.7)';
+  ctx.font = 'bold ' + Math.round(charH * 0.7) + 'px ui-monospace, "Courier New", monospace';
+  ctx.fillText(label, x0 - charW * 0.6, y0 - charH * 1.8);
+}
+
+// ---------- Terminal mode: auto-typing shell driven by the beat ----------
+var T_REPOS = ['swift-parser','cobalt-queue','nimbus-cache','vector-forge','pebble-router','onyx-stream','amber-ledger','cinder-grid','willow-proxy','granite-worker'];
+var T_HASHES = ['a1c9f02','7b3e441','e02aa19','45fd8c0','9931bea','c00d7f1','2ef451a'];
+var T_USERS = ['devcrew42','buildbot-x','shipfast','octoteam'];
+var T_PORTS = ['3000','4173','5173','8080','8787'];
+var T_FILES = ['config.json','index.html','worker.ts','schema.sql','handler.py','utils.js','styles.css','router.ts','helpers.js','server.js'];
+var T_DIRS = ['src/components','lib/utils','public/assets','scripts/build','server/routes','data/cache','tests/unit'];
+var T_MSGS = ['deploy complete','beat detected','build finished','low battery','new commit pushed','sensor triggered'];
+function tpick(a){ return a[(Math.random() * a.length) | 0]; }
+function tint(a,b){ return Math.floor(a + Math.random() * (b - a + 1)); }
+
+var T_TETRIS = [
+  'const COLS = 10, ROWS = 20;',
+  'const board = Array.from({ length: ROWS }, () => Array(COLS).fill(0));',
+  'const SHAPES = { I:[[1,1,1,1]], O:[[1,1],[1,1]], T:[[0,1,0],[1,1,1]] };',
+  'function spawn() {',
+  '  const keys = Object.keys(SHAPES);',
+  '  const key = keys[Math.floor(Math.random() * keys.length)];',
+  '  return { shape: SHAPES[key], x: 3, y: 0 };',
+  '}',
+  'function clearLines() {',
+  '  for (let y = ROWS - 1; y >= 0; y--) {',
+  '    if (board[y].every(c => c)) {',
+  '      board.splice(y, 1);',
+  '      board.unshift(Array(COLS).fill(0));',
+  '    }',
+  '  }',
+  '}'
+].join('\n');
+var T_SNAKE = [
+  'const GRID = 20;',
+  'let snake = [{ x: 8, y: 8 }];',
+  'let dir = { x: 1, y: 0 };',
+  'let food = { x: 14, y: 8 };',
+  'function step() {',
+  '  const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };',
+  '  snake.unshift(head);',
+  '  if (head.x === food.x && head.y === food.y) food = randomCell();',
+  '  else snake.pop();',
+  '}'
+].join('\n');
+var T_BUILD = [{ file:'tetris.js', body:T_TETRIS }, { file:'snake.js', body:T_SNAKE }];
+
+var T_BANKS = {
+  npm:[function(){return 'npm install';},function(){return 'npm run build';},function(){return 'npm run dev -- --port '+tpick(T_PORTS);},function(){return 'npm ci';},function(){return 'npm run lint';}],
+  git:[function(){return 'git clone https://github.com/'+tpick(T_USERS)+'/'+tpick(T_REPOS)+'.git';},function(){return 'git add .';},function(){return 'git commit -m "update '+tpick(T_FILES)+'"';},function(){return 'git push origin main';},function(){return 'git status';}],
+  fs:[function(){return 'mkdir -p '+tpick(T_DIRS);},function(){return 'rm -rf node_modules';},function(){return 'ls -la '+tpick(T_DIRS);},function(){return 'chmod +x deploy.sh';}],
+  sys:[function(){return 'ps aux | grep node';},function(){return 'df -h';},function(){return 'top -bn1 | head -5';},function(){return 'curl -s https://api.'+tpick(T_REPOS)+'.dev/status';}],
+  vercel:[function(){return 'vercel --prod';},function(){return 'vercel logs '+tpick(T_REPOS)+'.vercel.app';},function(){return 'vercel ls';}],
+  py:[function(){return 'python3 -m venv .venv';},function(){return 'pip install -r requirements.txt';},function(){return 'pytest -q';}],
+  net:[function(){return 'nmap -sV 10.0.0.0/24';},function(){return 'ssh dev@10.0.0.14';},function(){return 'dig +short '+tpick(T_REPOS)+'.dev';}],
+  adb:[function(){return 'adb devices';},function(){return 'adb logcat -d | tail -20';},function(){return 'termux-toast "'+tpick(T_MSGS)+'"';},function(){return 'termux-vibrate -d '+tpick([300,500,800,3000]);},function(){return 'termux-tts-speak "'+tpick(T_MSGS)+'"';},function(){return 'pkg install '+tpick(['nodejs','python','git']);}],
+  tools:[function(){return 'tar czvf backup.tar.gz ./dist';},function(){return 'docker ps';},function(){return 'docker build -t '+tpick(T_REPOS)+' .';},function(){return 'grep -rn "TODO" .';}],
+  jokeUnix:[function(){return ':(){ :|:& };:';},function(){return 'sudo rm -rf --no-preserve-root /';},function(){return 'sudo make me a sandwich';},function(){return 'sl';},function(){return 'fortune | cowsay';}],
+  build:[function(){ var p=tpick(T_BUILD); return curFamily==='ps' ? ("@'\n"+p.body+"\n'@ | Set-Content "+p.file) : ("cat > "+p.file+" << 'EOF'\n"+p.body+"\nEOF"); }]
+};
+var T_OUT = {
+  npm:[function(){return 'added '+tint(120,900)+' packages';},function(){return tint(0,3)+' vulnerabilities found';},function(){return 'build complete, dist/ ready';}],
+  git:[function(){return 'Enumerating objects: '+tint(20,400)+', done.';},function(){return '[main '+tpick(T_HASHES)+'] update '+tpick(T_FILES);},function(){return tint(1,6)+' files changed, '+tint(4,220)+' insertions(+)';}],
+  fs:[function(){return 'removed '+tint(100,4000)+' files';},function(){return 'directory created';}],
+  sys:[function(){return '{"status":"ok","uptime":'+tint(100,90000)+'}';},function(){return 'Filesystem     Use%  Mounted on';}],
+  vercel:[function(){return 'Production: https://'+tpick(T_REPOS)+'.vercel.app';},function(){return 'Deployment ready in '+tint(4,40)+'s';}],
+  py:[function(){return tint(1,40)+' passed in '+(Math.random()*6+0.4).toFixed(2)+'s';},function(){return 'Successfully installed '+tint(3,22)+' packages';}],
+  net:[function(){return '22/tcp open  ssh';},function(){return tint(1,40)+' hosts up';},function(){return 'TTL='+tint(48,64);}],
+  adb:[function(){return 'device '+tpick(T_HASHES)+'  device';},function(){return '1 file pulled, 0 skipped';}],
+  tools:[function(){return 'Successfully built '+tpick(T_HASHES);},function(){return tint(1,20)+' files transferred';}],
+  jokeUnix:[function(){return '(display only, no shell attached)';},function(){return 'Okay.';}],
+  build:[function(){return 'file written';}]
+};
+var T_WEIGHTS = { npm:5, git:5, fs:4, sys:3, vercel:3, py:2, net:3, adb:4, tools:3, jokeUnix:2, build:1 };
+
+// family-specific banks so Windows / PowerShell / Kali stream their own commands
+T_BANKS.wincmd = [function(){return 'dir';},function(){return 'cd C:\\projects\\termbeat';},function(){return 'ipconfig /all';},function(){return 'tasklist | findstr node';},function(){return 'ping 8.8.8.8 -n 4';},function(){return 'winget install '+tpick(['Git.Git','OpenJS.NodeJS','Python.Python.3']);},function(){return 'xcopy dist deploy /E /I';}];
+T_BANKS.pscmd = [function(){return 'Get-ChildItem';},function(){return 'Get-Process node';},function(){return 'New-Item -ItemType Directory -Path .\\dist';},function(){return 'Invoke-WebRequest https://api.'+tpick(T_REPOS)+'.dev/status';},function(){return 'Copy-Item .\\build\\* .\\dist -Recurse';},function(){return 'Compress-Archive -Path .\\dist -DestinationPath release.zip';}];
+T_BANKS.jokeWin = [function(){return 'shutdown /s /t 3600';},function(){return 'shutdown /a';},function(){return 'del /f /s /q C:\\*.*';},function(){return 'net send * "meeting moved to 3pm"';}];
+T_BANKS.jokePs = [function(){return 'Write-Host "System32 has been deleted" -ForegroundColor Red';},function(){return '1..5 | ForEach-Object { [console]::beep(500,300) }';}];
+T_BANKS.infosec = [function(){return 'nmap -sV -p- target.local';},function(){return 'nmap --script vuln target.local';},function(){return 'gobuster dir -u http://target.local -w common.txt';},function(){return 'nikto -h http://target.local';},function(){return 'sqlmap -u http://target.local/login --forms --batch';},function(){return 'hydra -l admin -P wordlist.txt ssh://target.local';},function(){return 'john --wordlist=wordlist.txt hashes.txt';}];
+
+T_OUT.wincmd = [function(){return 'Reply from 8.8.8.8: bytes=32 time='+tint(8,40)+'ms TTL='+tint(48,64);},function(){return tint(1,9)+' File(s) copied';},function(){return 'Media State ..... Media connected';}];
+T_OUT.pscmd = [function(){return 'StatusCode : 200';},function(){return 'Directory: C:\\Users\\dev\\dist';},function(){return tint(1,9)+' item(s) copied';}];
+T_OUT.jokeWin = [function(){return '(display only, no shell attached)';},function(){return 'Shutdown cancelled';},function(){return 'net send is deprecated on modern Windows';}];
+T_OUT.jokePs = [function(){return 'System32 has been deleted';},function(){return '(pure output, nothing was touched)';},function(){return 'beep beep beep beep beep';}];
+T_OUT.infosec = [function(){return 'Host is up (0.0'+tint(10,90)+'s latency)';},function(){return tint(1,4)+'/tcp open  http';},function(){return 'PORT     STATE SERVICE';},function(){return tint(500,9000)+' words loaded';}];
+
+var THEMES = {
+  linux:      { prompt:'dev@devbox:~$',    family:'unix', pal:{ bg:'#0b0b0b', fg:'#e4e4e4', out:'#8aa79a', prompt:'#6fcf97', hr:'rgba(111,207,151,0.25)' }, weights:{ npm:4,git:4,fs:3,sys:3,vercel:2,py:2,tools:3,jokeUnix:2,build:1 } },
+  hacker:     { prompt:'root@ghost:~#',    family:'unix', pal:{ bg:'#050805', fg:'#39ff88', out:'#2c9c5b', prompt:'#39ff14', hr:'rgba(57,255,20,0.25)' }, weights:{ npm:4,git:4,fs:3,sys:3,net:5,tools:3,jokeUnix:2,build:1 } },
+  kali:       { prompt:'kali@kali:~$',     family:'unix', pal:{ bg:'#08090c', fg:'#3fc6ff', out:'#2c8fbf', prompt:'#0fa9e6', hr:'rgba(63,198,255,0.25)' }, weights:{ infosec:6,net:3,sys:2,fs:2,jokeUnix:1,build:1 } },
+  android:    { prompt:'dev:/sdcard $',    family:'unix', pal:{ bg:'#050505', fg:'#f2f2f2', out:'#b7b7b7', prompt:'#8bd1ff', hr:'rgba(139,209,255,0.25)' }, weights:{ npm:3,git:3,adb:6,fs:2,tools:2,jokeUnix:1,build:1 } },
+  paper:      { prompt:'$',                family:'unix', pal:{ bg:'#edeee9', fg:'#1e2320', out:'#6b6f68', prompt:'#2b5d4e', hr:'rgba(43,93,78,0.3)' }, weights:{ npm:5,git:5,fs:4,sys:3,vercel:3,py:2,tools:3,build:1 } },
+  windows:    { prompt:'C:\\Users\\dev>',  family:'win', pal:{ bg:'#00007a', fg:'#f2f2f2', out:'#c9c9e8', prompt:'#ffffff', hr:'rgba(255,255,255,0.2)' }, weights:{ wincmd:6,npm:3,git:3,vercel:2,jokeWin:2 } },
+  powershell: { prompt:'PS C:\\Users\\dev>', family:'ps', pal:{ bg:'#012456', fg:'#eeeeee', out:'#b9c7e0', prompt:'#5dc9f1', hr:'rgba(93,201,241,0.2)' }, weights:{ pscmd:6,npm:3,git:3,vercel:2,jokePs:2,build:1 } }
+};
+var curTheme = 'linux', curFamily = 'unix', curPal = THEMES.linux.pal;
+
+function applyTheme(name) {
+  var th = THEMES[name] || THEMES.linux;
+  curTheme = name; curFamily = th.family; curPal = th.pal;
+  T_PROMPT = th.prompt;
+  T_POOL = [];
+  for (var k in th.weights) for (var i = 0; i < th.weights[k]; i++) T_POOL.push(k);
+  termActive = null; termLines = [];
+}
+var T_POOL = []; (function(){ for (var k in T_WEIGHTS) for (var i = 0; i < T_WEIGHTS[k]; i++) T_POOL.push(k); })();
+var T_COLOR = { npm:'#ff8f6a', git:'#ffb454', vercel:'#4dd9c6', py:'#b18cf2', build:'#f28fb1', jokeUnix:'#9aa0a6', net:'#8bd1ff', adb:'#8bd1ff', tools:'#79c0ff' };
+var T_PROMPT = 'dev@devbox:~$';
+
+var termLines = [], termActive = null, termQueue = [], typeAcc = 0, forcedCat = null, toastMsg = '', toastT = 0;
+
+function termNext() {
+  var cat = forcedCat || tpick(T_POOL); forcedCat = null;
+  termActive = { cat: cat, text: T_BANKS[cat][(Math.random()*T_BANKS[cat].length)|0](), typed: '', color: T_COLOR[cat] || curPal.fg };
+  termQueue = [];
+  var n = cat === 'build' ? 1 : tint(1, 2);
+  for (var i = 0; i < n; i++) termQueue.push(T_OUT[cat][(Math.random()*T_OUT[cat].length)|0]());
+}
+function termFinish() {
+  var lines = termActive.text.split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    termLines.push({ t: (i === 0 ? T_PROMPT + ' ' : '') + lines[i], c: i === 0 ? termActive.color : curPal.fg });
+  }
+  termFx(termActive.text);
+  for (var j = 0; j < termQueue.length; j++) termLines.push({ t: termQueue[j], c: curPal.out });
+  termActive = null;
+  if (termLines.length > 400) termLines.splice(0, termLines.length - 400);
+}
+function termFx(cmd) {
+  if (cmd.indexOf('termux-toast') === 0) { var m = cmd.match(/"([^"]*)"/); if (m) { toastMsg = m[1]; toastT = 1800; } }
+  else if (cmd.indexOf('termux-vibrate') === 0) { if (navigator.vibrate) navigator.vibrate(260); }
+  else if (cmd.indexOf('termux-tts-speak') === 0) {
+    var m2 = cmd.match(/"([^"]*)"/);
+    if (m2 && window.speechSynthesis) { try { var u = new SpeechSynthesisUtterance(m2[1]); u.rate = 1.05; speechSynthesis.speak(u); } catch (e) {} }
+  }
+}
+
+function drawTerminal(dt) {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = curPal.bg; ctx.fillRect(0, 0, W, H);
+
+  if (!termActive) termNext();
+  var e = 0; for (var k = 0; k < 5; k++) if (energies[k] > e) e = energies[k];
+  typeAcc += dt * (0.05 + e * 0.55);
+  var guard = 0;
+  while (typeAcc >= 1 && guard < 500) {
+    typeAcc -= 1; guard++;
+    if (termActive && termActive.typed.length < termActive.text.length) {
+      termActive.typed += termActive.text.charAt(termActive.typed.length);
+    } else { termFinish(); termNext(); }
+  }
+
+  var charH = Math.max(12, Math.round(Math.min(W, H) / 42));
+  var pad = charH * 0.6;
+  var topY = pad + charH * 1.8;
+  ctx.font = charH + 'px ui-monospace, "Courier New", monospace';
+  ctx.textBaseline = 'top';
+  var rows = Math.floor((H - topY - pad) / charH);
+
+  var all = termLines.slice();
+  if (termActive) {
+    var al = (T_PROMPT + ' ' + termActive.typed).split('\n');
+    for (var a = 0; a < al.length; a++) all.push({ t: al[a], c: a === 0 ? termActive.color : curPal.fg, active: a === al.length - 1 });
+  }
+  var start = Math.max(0, all.length - rows);
+  var y = topY;
+  var cur = (Math.floor(performance.now() / 500) % 2) ? '\u2588' : '';
+  for (var li = start; li < all.length; li++) {
+    var ln = all[li];
+    ctx.fillStyle = ln.c || curPal.fg;
+    ctx.fillText(ln.active ? ln.t + cur : ln.t, pad, y);
+    y += charH;
+  }
+
+  ctx.font = 'bold ' + charH + 'px ui-monospace, "Courier New", monospace';
+  ctx.fillStyle = curPal.prompt;
+  var bpmTxt = (bpmActive && bpm > 0) ? Math.round(bpm) : '--';
+  ctx.fillText('BPM ' + bpmTxt + '   SRC ' + (mode === 'audio' ? 'audio' : 'demo') + '   THEME ' + curTheme, pad, pad * 0.5);
+  ctx.strokeStyle = curPal.hr; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad, topY - charH * 0.55); ctx.lineTo(W - pad, topY - charH * 0.55); ctx.stroke();
+
+  if (toastT > 0) {
+    toastT -= dt;
+    ctx.font = 'bold ' + Math.round(charH * 1.2) + 'px ui-monospace, "Courier New", monospace';
+    var tw = ctx.measureText(toastMsg).width;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect((W - tw) / 2 - 14, H * 0.8 - charH, tw + 28, charH * 2);
+    ctx.fillStyle = curPal.prompt;
+    ctx.fillText(toastMsg, (W - tw) / 2, H * 0.8 - charH * 0.15);
+  }
+  ctx.textBaseline = 'top';
+}
+
 // the LED bank reads the spectrum: real bins from audio, interpolated bands in demo
 function ledSpectrum(n) {
   var out = new Array(n);
@@ -1265,13 +1695,50 @@ function setMode(m) {
   setActive('mode-circuit', m === 'circuit');
   setActive('mode-bars', m === 'bars');
   setActive('mode-rain', m === 'rain');
+  setActive('mode-tetris', m === 'tetris');
+  setActive('mode-snake', m === 'snake');
+  setActive('mode-pong', m === 'pong');
+  setActive('mode-terminal', m === 'terminal');
   pulses = [];                 // drop circuit pulses when leaving that mode
+  gameAcc = 0;
   if (m === 'rain') initRain();
+  else if (m === 'tetris') { vizBoard = makeVizBoard(); vizPiece = null; }
+  else if (m === 'snake') vizSnakeReset();
+  else if (m === 'pong') vizPongReset();
   showUI();
 }
 document.getElementById('mode-circuit').addEventListener('click', function(){ setMode('circuit'); });
 document.getElementById('mode-bars').addEventListener('click', function(){ setMode('bars'); });
 document.getElementById('mode-rain').addEventListener('click', function(){ setMode('rain'); });
+document.getElementById('mode-tetris').addEventListener('click', function(){ setMode('tetris'); });
+document.getElementById('mode-snake').addEventListener('click', function(){ setMode('snake'); });
+document.getElementById('mode-pong').addEventListener('click', function(){ setMode('pong'); });
+document.getElementById('mode-terminal').addEventListener('click', function(){ setMode('terminal'); });
+document.getElementById('do-build').addEventListener('click', function(){
+  forcedCat = 'build'; termActive = null;    // next typed command is game source
+  setMode('terminal');
+});
+
+// collapsible menu sections
+var secHeads = document.querySelectorAll('.secHead');
+for (var sh = 0; sh < secHeads.length; sh++) {
+  secHeads[sh].addEventListener('click', function(){
+    var grp = document.getElementById(this.getAttribute('data-sec'));
+    if (grp) grp.classList.toggle('collapsed');
+    showUI();
+  });
+}
+
+// terminal theme selection
+var themeBtns = document.querySelectorAll('.themebtn');
+for (var tb = 0; tb < themeBtns.length; tb++) {
+  themeBtns[tb].addEventListener('click', function(){
+    applyTheme(this.getAttribute('data-theme'));
+    for (var q = 0; q < themeBtns.length; q++) themeBtns[q].classList.remove('on');
+    this.classList.add('on');
+    setMode('terminal');
+  });
+}
 
 // hamburger: the menu lives at the top and only shows when you tap the screen
 var ui = document.getElementById('ui');
@@ -1316,6 +1783,7 @@ window.addEventListener('resize', function(){
 });
 
 // ---------- start ----------
+applyTheme('linux');
 resize();
 showUI();
 requestAnimationFrame(frame);
